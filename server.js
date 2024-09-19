@@ -10,7 +10,8 @@ const catRoutes = require('./routes/categoryRoutes');
 const cartRoutes = require('./routes/cartRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const orderRoutes = require('./routes/orderRoutes');
-
+const favoriteRoutes = require('./routes/favRoutes');
+const bannerRoutes = require('./routes/BannerRoutes');
 
 const Razorpay = require('razorpay');
 
@@ -37,6 +38,8 @@ app.use('/api/categories',catRoutes ); // Use the categories routes
 app.use('/api/cart',cartRoutes ); // Use the cart routes
 app.use('/api/payment',paymentRoutes ); // Use the payment routes
 app.use('/api/orders',orderRoutes ); // Use the orders routes
+app.use('/api/favorites',favoriteRoutes ); // Use the favorites routes
+app.use('/api/banners',bannerRoutes ); // Use the banners routes
 
 
 app.get('/', (req, res) => {

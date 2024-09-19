@@ -27,7 +27,7 @@ const addProduct = async (req, res) => {
       category_id,
       brand,
       image_url: result.secure_url,
-      discount_percentage,
+      discount_percentage,      
     });
 
     const savedProduct = await product.save();
