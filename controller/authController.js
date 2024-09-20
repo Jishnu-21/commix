@@ -5,6 +5,8 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
+const { OAuth2Client } = require('google-auth-library');
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const temporaryStore = new Map();
 const refreshTokens = new Set(); // Store for valid refresh tokens
@@ -16,6 +18,60 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS,
   },
 });
+
+
+exports.googleLogin = async (req, res) => {
+  try {
+    const { token } = req.body;
+    const ticket = await client.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const { email, name, picture, given_name, family_name, sub: googleId } = ticket.getPayload(); // Get Google ID
+
+    let user = await User.findOne({ email });
+    if (!user) {
+      // Create a new user if they don't exist
+      user = new User({
+        username: name,
+        email,
+        isVerified: true,
+        profile_picture: picture,
+        first_name: given_name,
+        last_name: family_name,
+        googleId, // Save Google ID
+      });
+      await user.save();
+    } else {
+      // Update existing user's information
+      user.username = name;
+      user.profile_picture = picture;
+      user.first_name = given_name;
+      user.last_name = family_name;
+      user.googleId = googleId; // Update Google ID if necessary
+      await user.save();
+    }
+
+    const { accessToken, refreshToken } = generateTokens(user.id);
+
+    res.json({
+      accessToken,
+      refreshToken,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        profile_picture: user.profile_picture,
+        first_name: user.first_name,
+        last_name: user.last_name,
+      },
+    });
+  } catch (error) {
+    console.error('Error during Google login:', error);
+    res.status(500).json({ message: 'Server error during Google login' });
+  }
+};
+
 
 // Helper function to generate tokens
 const generateTokens = (userId) => {

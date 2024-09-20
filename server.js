@@ -12,7 +12,9 @@ const paymentRoutes = require('./routes/paymentRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const favoriteRoutes = require('./routes/favRoutes');
 const bannerRoutes = require('./routes/BannerRoutes');
-
+const reviewRoutes = require('./routes/ReviewRoutes');
+const offerRoutes = require('./routes/OfferRoutes');
+const reportRoutes = require('./routes/ReportRoutes');
 const Razorpay = require('razorpay');
 
 
@@ -40,7 +42,9 @@ app.use('/api/payment',paymentRoutes ); // Use the payment routes
 app.use('/api/orders',orderRoutes ); // Use the orders routes
 app.use('/api/favorites',favoriteRoutes ); // Use the favorites routes
 app.use('/api/banners',bannerRoutes ); // Use the banners routes
-
+app.use('/api/reviews',reviewRoutes ); // Use the reviews routes
+app.use('/api/offers',offerRoutes ); // Use the offers routes  
+app.use('/api/reports',reportRoutes ); // Use the reports routes
 
 app.get('/', (req, res) => {
   res.send('Server Running');

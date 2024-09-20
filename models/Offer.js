@@ -8,6 +8,7 @@ const offerSchema = new mongoose.Schema({
   end_date: { type: Date, required: true },
   product_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
   is_active: { type: Boolean, default: true },
+  image_url: { type: String }, 
 }, { timestamps: true });
 
 module.exports = mongoose.model('Offer', offerSchema);
