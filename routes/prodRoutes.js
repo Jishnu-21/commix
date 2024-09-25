@@ -1,16 +1,22 @@
 const express = require('express');
-const productController = require('../controller/ProductController');
+const productController = require('../controller/productController');
 const authenticate = require('../middleware/Adminauth');
 const multer = require('multer');
-const upload = multer({ storage: multer.memoryStorage() });
+
+// Use memory storage for multer
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+  });
 
 const router = express.Router();
 
-
-
 // Routes
-router.post('/add', upload.single('image'),productController.addProduct)
-;router.patch('/block/:id', authenticate, productController.blockProduct);
-router.put('/edit/:id', authenticate, productController.editProduct);
+router.post('/add', upload.array('files', 4), productController.addProduct); // Use 'files' to match the keyrouter.patch('/block/:id', authenticate, productController.blockProduct);
+router.put('/edit/:id', authenticate, upload.array('images', 10), productController.editProduct); // Also support multiple images for edit
+router.get('/:id', productController.getProductDetails); // Fetch product details by ID
+router.get('/details/:slug', productController.getProductDetailsBySlug);
+router.get('/', productController.getAllProducts); // Fetch all products
+router.post('/trackProduct', productController.trackProductVisit);
 
 module.exports = router;

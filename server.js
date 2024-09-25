@@ -25,7 +25,11 @@ const razorpay = new Razorpay({
   });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: 'http://localhost:3000', // or your frontend URL
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(bodyParser.json());
 
 // Connect to MongoDB
@@ -35,7 +39,7 @@ mongoose.connect(process.env.MONGO_URI)
 
 // Routes
 app.use('/api/auth', authRoutes); // Use the authentication routes
-app.use('/api/product',prodRoutes ); // Use the products routes
+app.use('/api/products',prodRoutes ); // Use the products routes
 app.use('/api/categories',catRoutes ); // Use the categories routes
 app.use('/api/cart',cartRoutes ); // Use the cart routes
 app.use('/api/payment',paymentRoutes ); // Use the payment routes
