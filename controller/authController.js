@@ -10,7 +10,6 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const AppleAuth = require('apple-auth');
 
 const temporaryStore = new Map();
-const refreshTokens = new Set(); // Store for valid refresh tokens
 
 const transporter = nodemailer.createTransport({
   service: 'Gmail',
@@ -20,120 +19,6 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-exports.googleLogin = async (req, res) => {
-  try {
-    const { token } = req.body;
-    const ticket = await client.verifyIdToken({
-      idToken: token,
-      audience: process.env.GOOGLE_CLIENT_ID, // Ensure this matches your Google Client ID
-    });
-    const { email, name, picture, given_name, family_name, sub: googleId } = ticket.getPayload();
-
-    let user = await User.findOne({ email });
-    if (!user) {
-      // Create a new user if they don't exist
-      user = new User({
-        username: name,
-        email,
-        isVerified: true,
-        profile_picture: picture,
-        first_name: given_name,
-        last_name: family_name,
-        googleId,
-      });
-      await user.save();
-    } else {
-      // Update existing user's information
-      user.username = name;
-      user.first_name = given_name;
-      user.last_name = family_name;
-      user.googleId = googleId; // Update Google ID if necessary
-      await user.save();
-    }
-
-    const { accessToken, refreshToken } = generateTokens(user.id);
-
-    res.json({
-      accessToken,
-      refreshToken,
-      user: {
-        id: user._id,
-        username: user.username,
-        email: user.email,
-        profile_picture: user.profile_picture,
-        first_name: user.first_name,
-        last_name: user.last_name,
-      },
-    });
-  } catch (error) {
-    console.error('Error during Google login:', error);
-    res.status(400).json({ message: 'Invalid token or user not found' }); // Provide a clearer error message
-  }
-  
-  exports.googleLogin = async (req, res) => {
-    try {
-      const { token } = req.body;
-      const ticket = await client.verifyIdToken({
-        idToken: token,
-        audience: process.env.GOOGLE_CLIENT_ID, // Ensure this matches your Google Client ID
-      });
-      const { email, name, picture, given_name, family_name, sub: googleId } = ticket.getPayload();
-  
-      let user = await User.findOne({ email });
-  
-      if (user && !user.googleId) {
-        // User has signed up using email/password, so don't overwrite
-        return res.status(400).json({ message: 'User signed up with email/password. Please use email login.' });
-      }
-  
-      if (!user) {
-        // Create a new user if they don't exist
-        user = new User({
-          username: name,
-          email,
-          isVerified: true,
-          profile_picture: picture,
-          first_name: given_name,
-          last_name: family_name,
-          googleId,
-        });
-        await user.save();
-      } else {
-        // Update existing user's information if they previously used Google login
-        if (user.googleId === googleId) {
-          user.username = name;
-          user.profile_picture = picture;
-          user.first_name = given_name;
-          user.last_name = family_name;
-          await user.save();
-        } else {
-          return res.status(400).json({ message: 'User signed up with email/password. Please use email login.' });
-        }
-      }
-  
-      const { accessToken, refreshToken } = generateTokens(user.id);
-  
-      res.json({
-        accessToken,
-        refreshToken,
-        user: {
-          id: user._id,
-          username: user.username,
-          email: user.email,
-          profile_picture: user.profile_picture,
-          first_name: user.first_name,
-          last_name: user.last_name,
-        },
-      });
-    } catch (error) {
-      console.error('Error during Google login:', error);
-      res.status(400).json({ message: 'Invalid token or user not found' });
-    }
-  };
-  
-};
-
-// Helper function to generate tokens
 const generateTokens = (userId) => {
   const accessToken = jwt.sign(
     { id: userId },
@@ -145,8 +30,71 @@ const generateTokens = (userId) => {
     process.env.JWT_REFRESH_SECRET || 'fallback_refresh_secret',
     { expiresIn: '7d' }
   );
-  refreshTokens.add(refreshToken);
   return { accessToken, refreshToken };
+};
+
+exports.googleLogin = async (req, res) => {
+  try {
+    const { token } = req.body;
+    const ticket = await client.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    const { email, name, picture, given_name, family_name, sub: googleId } = ticket.getPayload();
+
+    let user = await User.findOne({ email });
+
+    if (user && !user.googleId) {
+      return res.status(400).json({ message: 'User signed up with email/password. Please use email login.' });
+    }
+
+    if (!user) {
+      user = new User({
+        username: name,
+        email,
+        isVerified: true,
+        profile_picture: picture,
+        first_name: given_name,
+        last_name: family_name,
+        googleId,
+      });
+      await user.save();
+    } else {
+      if (user.googleId === googleId) {
+        user.username = name;
+        user.profile_picture = picture;
+        user.first_name = given_name;
+        user.last_name = family_name;
+        await user.save();
+      } else {
+        return res.status(400).json({ message: 'User signed up with email/password. Please use email login.' });
+      }
+    }
+
+    const { accessToken, refreshToken } = generateTokens(user.id);
+
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
+    res.json({
+      accessToken,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        profile_picture: user.profile_picture,
+        first_name: user.first_name,
+        last_name: user.last_name,
+      },
+    });
+  } catch (error) {
+    console.error('Error during Google login:', error);
+    res.status(400).json({ message: 'Invalid token or user not found' });
+  }
 };
 
 exports.signup = async (req, res) => {
@@ -210,29 +158,20 @@ exports.signup = async (req, res) => {
   }
 };
 
-// Function to generate a new OTP and send it via email
-const generateAndSendOtp = (email, username) => {
-  const otp = Math.floor(100000 + Math.random() * 900000).toString(); // Generate a 6-digit OTP
-  const otpExpires = Date.now() + 2 * 60 * 1000; // Set OTP expiration to 2 minutes
-
-  // Store the OTP and its expiration time in the temporary store
-  temporaryStore.set(email, { otp, otpExpires, username });
-
-  // Send the OTP via email (implement your email sending logic here)
-  sendOtpEmail(email, otp);
-};
 exports.resendOtp = async (req, res) => {
   try {
     const { email } = req.body;
 
     const tempUser = temporaryStore.get(email);
     if (!tempUser) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found. Please start the signup process again.' 
+      });
     }
 
-    // Generate a new OTP and update the temporary store
     const otp = crypto.randomInt(100000, 999999).toString();
-    const otpExpires = Date.now() + 2 * 60 * 1000; // Set new expiration time
+    const otpExpires = Date.now() + 2 * 60 * 1000;
 
     temporaryStore.set(email, {
       ...tempUser,
@@ -240,11 +179,10 @@ exports.resendOtp = async (req, res) => {
       otpExpires,
     });
 
-    // Send the new OTP via email
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
-      subject: 'Your OTP Code',
+      subject: 'Your New OTP Code',
       text: `Your new OTP code is ${otp}. It is valid for 2 minutes.`,
     };
 
@@ -256,11 +194,19 @@ exports.resendOtp = async (req, res) => {
           message: 'Failed to send OTP email. Please try again later.',
         });
       }
-      res.json({ message: 'OTP resent successfully' });
+      res.status(200).json({
+        success: true,
+        message: 'New OTP sent successfully.',
+        email,
+      });
     });
+
   } catch (error) {
     console.error('Error during OTP resending:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error. Please try again later.' 
+    });
   }
 };
 
@@ -290,9 +236,15 @@ exports.verifyOtp = async (req, res) => {
 
     const { accessToken, refreshToken } = generateTokens(user.id);
 
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
     res.json({
       accessToken,
-      refreshToken,
       user: { id: user.id, username: user.username, email },
     });
   } catch (error) {
@@ -322,9 +274,15 @@ exports.userLogin = async (req, res) => {
 
     const { accessToken, refreshToken } = generateTokens(user.id);
 
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
     res.json({
       accessToken,
-      refreshToken,
       user: {
         id: user._id,
         username: user.username,
@@ -358,9 +316,15 @@ exports.adminLogin = async (req, res) => {
 
     const { accessToken, refreshToken } = generateTokens(admin.id);
 
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
     res.json({
       accessToken,
-      refreshToken,
       admin: {
         id: admin._id,
         username: admin.username,
@@ -374,28 +338,55 @@ exports.adminLogin = async (req, res) => {
 };
 
 exports.refreshToken = async (req, res) => {
-  const { refreshToken } = req.body;
-  if (!refreshToken || !refreshTokens.has(refreshToken)) {
-    return res.status(403).json({ message: 'Invalid refresh token' });
-  }
-
+  const refreshToken = req.cookies.refreshToken;
   try {
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'fallback_refresh_secret');
     const { accessToken, refreshToken: newRefreshToken } = generateTokens(decoded.id);
     
-    // Remove old refresh token and add new one
-    refreshTokens.delete(refreshToken);
-    refreshTokens.add(newRefreshToken);
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
 
-    res.json({ accessToken, refreshToken: newRefreshToken });
+    res.json({ accessToken });
   } catch (error) {
     console.error('Error refreshing token:', error);
-    res.status(403).json({ message: 'Invalid refresh token' });
+    res.status(403).json({ message: 'Invalid user' });
   }
 };
 
 exports.logout = (req, res) => {
-  const { refreshToken } = req.body;
-  refreshTokens.delete(refreshToken);
+  res.clearCookie('refreshToken');
   res.json({ message: 'Logged out successfully' });
+};
+
+
+exports.validateToken = async (req, res) => {
+  try {
+    // The user ID should be available in req.user.id if your auth middleware is working correctly
+    const userId = req.user.id;
+
+    // Find the user by ID
+    const user = await User.findById(userId).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // If the user is found, the token is valid
+    res.status(200).json({
+      success: true,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        // Add any other user fields you want to return
+      }
+    });
+  } catch (error) {
+    console.error('Error validating token:', error);
+    res.status(500).json({ success: false, message: 'Error validating token', error: error.message });
+  }
 };

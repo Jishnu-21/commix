@@ -2,12 +2,18 @@ const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
   googleId: { type: String, unique: true },
-  username: { type: String, required: true },
+  username: { type: String },
   email: { type: String, required: true, unique: true },
   password: { type: String, },
   first_name: { type: String },
   last_name: { type: String },
-  address: { type: String },
+  address: [{
+    street: { type: String },
+    house: { type: String },
+    postcode: { type: String },
+    location: { type: String },
+    country: { type: String }
+  }],
   phone_number: { type: String },
   profile_picture: { type: String },
   isBlocked: { type: Boolean, default: false },

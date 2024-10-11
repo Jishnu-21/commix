@@ -1,7 +1,7 @@
 const Admin = require('../models/Admin'); // Ensure this is correct
 const jwt = require('jsonwebtoken'); // Ensure this is imported
 
-const authenticate = async (req, res, next) => {
+const adminAuthenticate = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
 
   if (!token) {
@@ -28,4 +28,4 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-module.exports = authenticate;
+module.exports = adminAuthenticate;

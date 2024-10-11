@@ -41,7 +41,7 @@ exports.addToCart = async (req, res) => {
       await cartItem.save();
     }
 
-    console.log(cartItem)
+    console.log(cart)
 
     res.status(200).json({ message: 'Product added to cart successfully', cartItem });
   } catch (error) {

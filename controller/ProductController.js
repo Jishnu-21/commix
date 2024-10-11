@@ -128,7 +128,7 @@ const getProductDetails = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const product = await Product.findById(id);
+    const product = await Product.findById(id).populate('category_id');
 
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
@@ -143,7 +143,7 @@ const getProductDetails = async (req, res) => {
 
 const getAllProducts = async (req, res) => {
   try {
-    const products = await Product.find(); // Fetch all products from the database
+    const products = await Product.find().populate('category_id');
 
     return res.status(200).json({ success: true, products });
   } catch (error) {
@@ -156,8 +156,7 @@ const getProductDetailsBySlug = async (req, res) => {
   const { slug } = req.params;
 
   try {
-    // Find the product by slug
-    const product = await Product.findOne({ slug });
+    const product = await Product.findOne({ slug }).populate('category_id');
 
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });

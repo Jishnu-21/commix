@@ -15,9 +15,14 @@ const bannerRoutes = require('./routes/BannerRoutes');
 const reviewRoutes = require('./routes/ReviewRoutes');
 const offerRoutes = require('./routes/OfferRoutes');
 const reportRoutes = require('./routes/ReportRoutes');
+const userRoutes = require('./routes/userRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 const Razorpay = require('razorpay');
+const cookieParser = require('cookie-parser');
 
+app.use(express.urlencoded({ extended: true }));
 
+app.use(cookieParser());
 
 const razorpay = new Razorpay({
     key_id: process.env.RAZORPAY_KEY_ID,
@@ -28,7 +33,8 @@ const razorpay = new Razorpay({
 app.use(cors({
   origin: 'http://localhost:3000', // or your frontend URL
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials:true,
 }));
 app.use(bodyParser.json());
 
@@ -49,6 +55,8 @@ app.use('/api/banners',bannerRoutes ); // Use the banners routes
 app.use('/api/reviews',reviewRoutes ); // Use the reviews routes
 app.use('/api/offers',offerRoutes ); // Use the offers routes  
 app.use('/api/reports',reportRoutes ); // Use the reports routes
+app.use('/api/users',userRoutes  ); // Use the user routes
+app.use('/api/admin',adminRoutes  ); // Use the user routes
 
 app.get('/', (req, res) => {
   res.send('Server Running');
