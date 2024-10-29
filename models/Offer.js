@@ -6,7 +6,7 @@ const offerSchema = new mongoose.Schema({
   discount_percentage: { type: Number, required: true },
   start_date: { type: Date, required: true },
   end_date: { type: Date, required: true },
-  product_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+  product_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }], // Changed to array
   is_active: { type: Boolean, default: true },
   image_url: { type: String }, 
 }, { timestamps: true });

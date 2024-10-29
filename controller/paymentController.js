@@ -2,6 +2,7 @@ const Order = require('../models/Order');
 const Cart = require('../models/Cart');
 const CartItem = require('../models/CartItem');
 const Payment = require('../models/Payment');
+const Product = require('../models/Product');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
@@ -108,6 +109,15 @@ const verifyPayment = async (req, res) => {
 
     await paymentRecord.save();
 
+    // Update product stock quantities
+    for (const item of cartItems) {
+      await Product.findByIdAndUpdate(
+        item.product_id._id,
+        { $inc: { stock_quantity: -item.quantity } },
+        { new: true }
+      );
+    }
+
     // Clear the cart
     await CartItem.deleteMany({ cart_id: cart._id });
     cart.items = [];
@@ -115,7 +125,7 @@ const verifyPayment = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Payment verified and order created successfully',
+      message: 'Payment verified, order created, and stock updated successfully',
       order_id: savedOrder._id
     });
   } catch (error) {

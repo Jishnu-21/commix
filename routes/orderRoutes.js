@@ -1,6 +1,5 @@
 const express = require('express');
 const orderController = require('../controller/OrderController');
-const authenticate = require('../middleware/Adminauth');
 
 const router = express.Router();
 
@@ -8,6 +7,9 @@ const router = express.Router();
 router.post('/create', orderController.createOrderFromCart);                            
 router.get('/history/:userId', orderController.getOrderHistory);
 router.post('/verify', orderController.verifyPayment);
+router.get('/', orderController.getAllOrders);
+router.get('/invoice/:orderId', orderController.downloadInvoice);
+
 
 
 module.exports = router;

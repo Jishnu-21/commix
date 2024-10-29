@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const mongoosePaginate = require('mongoose-paginate-v2');
 
 const reviewSchema = new mongoose.Schema({
   user_id: {
@@ -11,9 +12,9 @@ const reviewSchema = new mongoose.Schema({
     required: true,
     ref: 'Product'
   },
-  photo_url: {
+  photo_urls: [{
     type: String,
-  },
+  }],
   comment: {
     type: String,
     required: true,
@@ -30,5 +31,7 @@ const reviewSchema = new mongoose.Schema({
     default: true
   }
 }, { timestamps: true });
+
+reviewSchema.plugin(mongoosePaginate);
 
 module.exports = mongoose.model('Review', reviewSchema);

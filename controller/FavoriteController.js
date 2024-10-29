@@ -59,7 +59,50 @@ const deleteFavorite = async (req, res) => {
     }
   };
   
+
+     // In your FavoriteController.js
+     const checkFavorite = async (req, res) => {
+      const { user_id, product_id } = req.query;
+ 
+      try {
+        const favorite = await Favourite.findOne({ user_id, product_id });
+        res.status(200).json({ success: true, isFavorite: !!favorite });
+      } catch (error) {
+        console.error('Error checking favorite status:', error);
+        res.status(500).json({ success: false, message: 'Server error', error: error.message });
+      }
+    };
+
+
+    const getFavorites = async (req, res) => {
+      const { user_id } = req.query;
+ 
+      try {
+        const favorites = await Favourite.find({ user_id }).populate('product_id'); // Populate product details
+        res.status(200).json({ success: true, favorites });
+      } catch (error) {
+        console.error('Error fetching favorites:', error);
+        res.status(500).json({ success: false, message: 'Server error', error: error.message });
+      }
+    };
+
+    const getProductsByIds = async (req, res) => {
+      const { product_ids } = req.body;
+ 
+      try {
+        const products = await Product.find({ _id: { $in: product_ids } });
+        res.status(200).json({products });
+      } catch (error) {
+        console.error('Error fetching products:', error);
+        res.status(500).json({ success: false, message: 'Server error', error: error.message });
+      }
+    };
+
+
   module.exports = {
+    getProductsByIds,
+    checkFavorite,
+    getFavorites,
     createFavorite,
     deleteFavorite,
   };

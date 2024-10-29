@@ -12,6 +12,9 @@ const upload = multer({
 
 router.get('/:userId',authenticate,userController.getUserDetails);
 router.put('/update', authenticate, upload.single('profile_picture'), userController.updateUser);
+router.post('/address', authenticate, userController.addAddress);
+router.put('/address/:addressId', authenticate, userController.updateAddress);
+router.delete('/address/:addressId', authenticate, userController.deleteAddress);
 
 
 module.exports = router;

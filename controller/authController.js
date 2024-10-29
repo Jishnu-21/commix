@@ -7,9 +7,6 @@ const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-const AppleAuth = require('apple-auth');
-
-const temporaryStore = new Map();
 
 const transporter = nodemailer.createTransport({
   service: 'Gmail',
@@ -42,34 +39,31 @@ exports.googleLogin = async (req, res) => {
     });
     const { email, name, picture, given_name, family_name, sub: googleId } = ticket.getPayload();
 
-    let user = await User.findOne({ email });
+    let user = await User.findOne({ $or: [{ googleId }, { email }] });
 
-    if (user && !user.googleId) {
-      return res.status(400).json({ message: 'User signed up with email/password. Please use email login.' });
-    }
-
-    if (!user) {
+    if (user) {
+      // Update user information
+      user.googleId = googleId;
+      user.username = name;
+      user.email = email;
+      user.profile_picture = picture;
+      user.first_name = given_name;
+      user.last_name = family_name;
+      user.isVerified = true;
+    } else {
+      // Create a new user
       user = new User({
+        googleId,
         username: name,
         email,
         isVerified: true,
         profile_picture: picture,
         first_name: given_name,
         last_name: family_name,
-        googleId,
       });
-      await user.save();
-    } else {
-      if (user.googleId === googleId) {
-        user.username = name;
-        user.profile_picture = picture;
-        user.first_name = given_name;
-        user.last_name = family_name;
-        await user.save();
-      } else {
-        return res.status(400).json({ message: 'User signed up with email/password. Please use email login.' });
-      }
     }
+
+    await user.save();
 
     const { accessToken, refreshToken } = generateTokens(user.id);
 
@@ -362,20 +356,15 @@ exports.logout = (req, res) => {
   res.json({ message: 'Logged out successfully' });
 };
 
-
 exports.validateToken = async (req, res) => {
   try {
-    // The user ID should be available in req.user.id if your auth middleware is working correctly
     const userId = req.user.id;
-
-    // Find the user by ID
     const user = await User.findById(userId).select('-password');
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    // If the user is found, the token is valid
     res.status(200).json({
       success: true,
       user: {
@@ -388,5 +377,89 @@ exports.validateToken = async (req, res) => {
   } catch (error) {
     console.error('Error validating token:', error);
     res.status(500).json({ success: false, message: 'Error validating token', error: error.message });
+  }
+};
+
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Generate a reset token
+    const resetToken = crypto.randomBytes(20).toString('hex');
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpires = Date.now() + 3600000; // Token expires in 1 hour
+
+    await user.save();
+
+    // Send email with reset link
+    const resetUrl = `http://${req.headers.host}/reset-password/${resetToken}`;
+    const mailOptions = {
+      to: user.email,
+      from: process.env.EMAIL_USER,
+      subject: 'Password Reset',
+      text: `You are receiving this because you (or someone else) have requested the reset of the password for your account.\n\n
+        Please click on the following link, or paste this into your browser to complete the process:\n\n
+        ${resetUrl}\n\n
+        If you did not request this, please ignore this email and your password will remain unchanged.\n`,
+    };
+
+    transporter.sendMail(mailOptions, (err) => {
+      if (err) {
+        console.error('Error sending email:', err);
+        return res.status(500).json({ message: 'Error sending email' });
+      }
+      res.status(200).json({ message: 'Reset email sent' });
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { password } = req.body;
+
+    const user = await User.findOne({
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: 'Password reset token is invalid or has expired' });
+    }
+
+    // Set the new password
+    user.password = password;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+
+    await user.save();
+
+    // Send confirmation email
+    const mailOptions = {
+      to: user.email,
+      from: process.env.EMAIL_USER,
+      subject: 'Your password has been changed',
+      text: `Hello,\n\nThis is a confirmation that the password for your account ${user.email} has just been changed.\n`,
+    };
+
+    transporter.sendMail(mailOptions, (err) => {
+      if (err) {
+        console.error('Error sending confirmation email:', err);
+      }
+      res.status(200).json({ message: 'Password reset successful' });
+    });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 };
