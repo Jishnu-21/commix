@@ -3,7 +3,6 @@ const { validationResult } = require('express-validator');
 const cloudinary = require('../config/cloudinary'); // Make sure this path is correct
 
 // Add a new offer
-// Add a new offer
 exports.addOffer = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -230,5 +229,46 @@ exports.applyOffer = async (req, res) => {
   } catch (error) {
     console.error('Error applying offer:', error);
     res.status(500).json({ message: 'Server error while applying offer' });
+  }
+};
+
+
+
+
+
+exports.removeOffer = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Validate ID
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Offer ID is required'
+      });
+    }
+
+    // Find and remove the offer
+    const offer = await Offer.findByIdAndDelete(id);
+
+    if (!offer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Offer not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Offer removed successfully'
+    });
+
+  } catch (error) {
+    console.error('Error removing offer:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to remove offer',
+      error: error.message
+    });
   }
 };

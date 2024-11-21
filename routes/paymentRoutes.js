@@ -1,12 +1,18 @@
-const paymentController = require('../controller/paymentController');
 const express = require('express');
-const authenticate = require('../middleware/userAuth');
 const router = express.Router();
+const {
+  createRazorpayOrder,
+  verifyPayment,
+  createGuestOrder,
+  verifyGuestPayment
+} = require('../controller/paymentController');
 
-// Create Razorpay order
-router.post('/create', paymentController.createRazorpayOrder);
+// Existing routes
+router.post('/create-order', createRazorpayOrder);
+router.post('/verify', verifyPayment);
+router.post('/create-guest-order', createGuestOrder);
 
-// Verify Razorpay payment
-router.post('/verify',authenticate, paymentController.verifyPayment);                            
+// Add this route - this was missing
+router.post('/verify-guest-payment', verifyGuestPayment);
 
 module.exports = router;

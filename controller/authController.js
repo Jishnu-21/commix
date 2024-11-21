@@ -7,6 +7,10 @@ const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const cookieParser = require('cookie-parser');
+const Offer = require('../models/Offer');
+
+const temporaryStore = new Map(); // Define temporaryStore
 
 const transporter = nodemailer.createTransport({
   service: 'Gmail',
@@ -116,7 +120,7 @@ exports.signup = async (req, res) => {
 
     temporaryStore.set(email, {
       username,
-      password: await bcrypt.hash(password, 10),
+      password,
       phone_number,
       otp,
       otpExpires,
@@ -204,6 +208,7 @@ exports.resendOtp = async (req, res) => {
   }
 };
 
+
 exports.verifyOtp = async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -220,7 +225,7 @@ exports.verifyOtp = async (req, res) => {
     const user = new User({
       username: tempUser.username,
       email,
-      password: tempUser.password,
+      password:tempUser.password,  // Use the hashed password
       phone_number: tempUser.phone_number,
       isVerified: true,
     });
@@ -249,21 +254,22 @@ exports.verifyOtp = async (req, res) => {
 
 exports.userLogin = async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-
     const { email, password } = req.body;
 
     const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+    if (!user || !user.password) {
+      return res.status(403).json({
+        success: false,
+        message: 'No account found with this email address'
+      });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(403).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
     }
 
     const { accessToken, refreshToken } = generateTokens(user.id);
@@ -276,6 +282,7 @@ exports.userLogin = async (req, res) => {
     });
 
     res.json({
+      success: true,
       accessToken,
       user: {
         id: user._id,
@@ -283,9 +290,13 @@ exports.userLogin = async (req, res) => {
         email: user.email,
       },
     });
+
   } catch (error) {
     console.error('Error during user login:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred during login. Please try again.'
+    });
   }
 };
 
@@ -333,6 +344,12 @@ exports.adminLogin = async (req, res) => {
 
 exports.refreshToken = async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
+  console.log('Refresh Token:', refreshToken);
+
+  if (!refreshToken) {
+    return res.status(403).json({ message: 'Refresh token not provided' });
+  }
+
   try {
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'fallback_refresh_secret');
     const { accessToken, refreshToken: newRefreshToken } = generateTokens(decoded.id);
@@ -381,85 +398,356 @@ exports.validateToken = async (req, res) => {
 };
 
 exports.forgotPassword = async (req, res) => {
+  let user;
   try {
     const { email } = req.body;
 
-    const user = await User.findOne({ email });
+    user = await User.findOne({ 
+      email,
+      googleId: { $exists: false },
+      password: { $exists: true }
+    });
+
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({
+        success: false,
+        message: 'No account found with this email address, or this account uses Google Sign-In'
+      });
     }
 
-    // Generate a reset token
-    const resetToken = crypto.randomBytes(20).toString('hex');
-    user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = Date.now() + 3600000; // Token expires in 1 hour
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenExpiry = Date.now() + 3600000;
 
-    await user.save();
+    user.resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+    user.resetPasswordExpire = resetTokenExpiry;
 
-    // Send email with reset link
-    const resetUrl = `http://${req.headers.host}/reset-password/${resetToken}`;
+    await user.save({ 
+      validateModifiedOnly: true
+    });
+
+    const resetUrl = `http://localhost:3000/login?token=${resetToken}`;
+
     const mailOptions = {
-      to: user.email,
-      from: process.env.EMAIL_USER,
-      subject: 'Password Reset',
-      text: `You are receiving this because you (or someone else) have requested the reset of the password for your account.\n\n
-        Please click on the following link, or paste this into your browser to complete the process:\n\n
-        ${resetUrl}\n\n
-        If you did not request this, please ignore this email and your password will remain unchanged.\n`,
+      from: 'Comix <' + process.env.EMAIL_USER + '>',
+      to: email,
+      subject: 'Password Reset Request',
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body {
+              font-family: 'Arial', sans-serif;
+              line-height: 1.6;
+              color: #333333;
+            }
+            .email-container {
+              max-width: 600px;
+              margin: 0 auto;
+              padding: 20px;
+              background-color: #ffffff;
+              border-radius: 10px;
+              box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            }
+            .header {
+              text-align: center;
+              padding: 20px 0;
+              border-bottom: 2px solid #f0f0f0;
+            }
+            .logo {
+              max-width: 150px;
+              height: auto;
+            }
+            .title {
+              color: #2C3E50;
+              font-size: 24px;
+              font-weight: bold;
+              margin: 20px 0;
+            }
+            .content {
+              padding: 20px 0;
+            }
+            .reset-button {
+              background-color: #000000;
+              color: #ffffff !important;
+              padding: 12px 30px;
+              text-decoration: none !important;
+              border-radius: 5px;
+              display: inline-block;
+              margin: 20px 0;
+              font-weight: bold;
+              text-align: center;
+              transition: background-color 0.3s;
+              border: none;
+            }
+            .reset-button:hover {
+              background-color: #333333;
+            }
+            .notice {
+              background-color: #f8f9fa;
+              padding: 15px;
+              border-radius: 5px;
+              margin: 20px 0;
+              border-left: 4px solid #000000;
+            }
+            .footer {
+              text-align: center;
+              padding-top: 20px;
+              border-top: 2px solid #f0f0f0;
+              font-size: 12px;
+              color: #666666;
+            }
+            .google-signin-notice {
+              background-color: #f8f9fa;
+              border-left: 4px solid #000000;
+              padding: 15px;
+              margin: 20px 0;
+              border-radius: 5px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="email-container">
+            <div class="header">
+              <img src="https://imgur.com/NjAG33k.gif" 
+                   alt="Comix Logo" 
+                   class="logo"
+                   style="width: 150px; height: auto; margin-bottom: 20px;">
+              <h1 class="title">Password Reset Request</h1>
+            </div>
+            
+            <div class="content">
+              <p>Hello,</p>
+              <p>We received a request to reset your password for your Comix account. Don't worry, we're here to help!</p>
+              
+              <div style="text-align: center;">
+                <a href="${resetUrl}" 
+                   class="reset-button" 
+                   style="background-color: #000000; 
+                          color: #ffffff !important; 
+                          text-decoration: none !important; 
+                          padding: 12px 30px; 
+                          border-radius: 5px; 
+                          display: inline-block; 
+                          margin: 20px 0; 
+                          font-weight: bold;">
+                  Reset Your Password
+                </a>
+              </div>
+              
+              <div class="notice">
+                <strong>⚠️ Important:</strong>
+                <ul>
+                  <li>This link will expire in 1 hour</li>
+                  <li>If you didn't request this reset, please ignore this email</li>
+                  <li>For security, this link can only be used once</li>
+                </ul>
+              </div>
+
+              <div class="google-signin-notice">
+                <strong>📱 Using Google Sign-In?</strong>
+                <p>If you normally sign in with Google, please continue to use the Google Sign-In option instead of resetting your password.</p>
+              </div>
+            </div>
+            
+            <div class="footer">
+              <p>This email was sent by Comix</p>
+              <p>If you have any questions, please contact our support team</p>
+              <p>&copy; ${new Date().getFullYear()} Comix. All rights reserved.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
     };
 
-    transporter.sendMail(mailOptions, (err) => {
-      if (err) {
-        console.error('Error sending email:', err);
-        return res.status(500).json({ message: 'Error sending email' });
-      }
-      res.status(200).json({ message: 'Reset email sent' });
+    await transporter.sendMail(mailOptions);
+
+    res.status(200).json({
+      success: true,
+      message: 'Password reset link sent to email'
     });
 
   } catch (error) {
     console.error('Forgot password error:', error);
-    res.status(500).json({ message: 'Server error' });
+
+    if (user) {
+      try {
+        user.resetPasswordToken = undefined;
+        user.resetPasswordExpire = undefined;
+        await user.save({ validateModifiedOnly: true });
+      } catch (saveError) {
+        console.error('Error clearing reset token:', saveError);
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Error sending reset email',
+      error: error.message
+    });
   }
 };
 
 exports.resetPassword = async (req, res) => {
   try {
-    const { token } = req.params;
-    const { password } = req.body;
+    const { token, newPassword } = req.body;
+
+    const resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(token)
+      .digest('hex');
 
     const user = await User.findOne({
-      resetPasswordToken: token,
-      resetPasswordExpires: { $gt: Date.now() },
+      resetPasswordToken,
+      resetPasswordExpire: { $gt: Date.now() }
     });
 
     if (!user) {
-      return res.status(400).json({ message: 'Password reset token is invalid or has expired' });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired reset token'
+      });
     }
 
-    // Set the new password
-    user.password = password;
+    user.password = newPassword;
     user.resetPasswordToken = undefined;
-    user.resetPasswordExpires = undefined;
+    user.resetPasswordExpire = undefined;
 
-    await user.save();
+    await user.save({ 
+      validateModifiedOnly: true,
+      validateBeforeSave: false
+    });
 
-    // Send confirmation email
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+      }
+    });
+
     const mailOptions = {
-      to: user.email,
       from: process.env.EMAIL_USER,
-      subject: 'Your password has been changed',
-      text: `Hello,\n\nThis is a confirmation that the password for your account ${user.email} has just been changed.\n`,
+      to: user.email,
+      subject: 'Password Reset Successful',
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body {
+              font-family: 'Arial', sans-serif;
+              line-height: 1.6;
+              color: #333333;
+            }
+            .email-container {
+              max-width: 600px;
+              margin: 0 auto;
+              padding: 20px;
+              background-color: #ffffff;
+              border-radius: 10px;
+              box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            }
+            .header {
+              text-align: center;
+              padding: 20px 0;
+              border-bottom: 2px solid #f0f0f0;
+            }
+            .content {
+              padding: 20px;
+              text-align: center;
+            }
+            .logo {
+              width: 150px;
+              height: auto;
+              margin-bottom: 20px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="email-container">
+            <div class="header">
+              <img src="https://i.imgur.com/DFVUt0m.png" 
+                   alt="Comix Logo" 
+                   class="logo"
+                   style="width: 150px; height: auto; margin-bottom: 20px;">
+              <h1 style="color: #2C3E50; margin: 0;">Password Reset Successful</h1>
+            </div>
+            <div class="content">
+              <p>Your password has been successfully reset.</p>
+              <p style="color: #e74c3c;">If you didn't make this change, please contact our support team immediately.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `
     };
 
-    transporter.sendMail(mailOptions, (err) => {
-      if (err) {
-        console.error('Error sending confirmation email:', err);
-      }
-      res.status(200).json({ message: 'Password reset successful' });
+    await transporter.sendMail(mailOptions);
+
+    res.status(200).json({
+      success: true,
+      message: 'Password reset successful'
     });
 
   } catch (error) {
     console.error('Reset password error:', error);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({
+      success: false,
+      message: 'Error resetting password',
+      error: error.message
+    });
   }
 };
+
+exports.applyOffer = async (req, res) => {
+  try {
+    const { code } = req.body;
+    
+    // Check if offer exists
+    const offer = await Offer.findOne({ code: code });
+    if (!offer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Offer not found or expired'
+      });
+    }
+
+    // Check if offer is active
+    if (!offer.isActive) {
+      return res.status(400).json({
+        success: false,
+        message: 'This offer is no longer active'
+      });
+    }
+
+    // Check if offer has expired
+    if (offer.expiryDate && new Date(offer.expiryDate) < new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: 'This offer has expired'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      offer: {
+        code: offer.code,
+        discount: offer.discount,
+        type: offer.type
+      }
+    });
+
+  } catch (error) {
+    console.error('Error applying offer:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error applying offer. Please try again.'
+    });
+  }
+};
+

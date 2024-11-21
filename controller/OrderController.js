@@ -5,10 +5,35 @@ const Payment = require('../models/Payment');
 const Razorpay = require('razorpay');
 const mongoose = require('mongoose');
 const PDFDocument = require('pdfkit');
+const crypto = require('crypto');
+const User = require('../models/User');
+const nodemailer = require('nodemailer');
+const cron = require('node-cron');
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_SECRET
+});
+
+const cleanupPendingOrders = async () => {
+  try {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    
+    const result = await Order.deleteMany({
+      payment_status: 'pending',
+      createdAt: { $lt: tenMinutesAgo }
+    });
+
+    console.log(`Cleaned up ${result.deletedCount} pending orders`);
+  } catch (error) {
+    console.error('Error cleaning up pending orders:', error);
+  }
+};
+
+cron.schedule('* * * * *', cleanupPendingOrders);
 
 const createOrderFromCart = async (req, res) => {
   const { user_id } = req.body;
-
   try {
     if (!mongoose.Types.ObjectId.isValid(user_id)) {
       return res.status(400).json({ success: false, message: 'Invalid user ID' });
@@ -25,33 +50,31 @@ const createOrderFromCart = async (req, res) => {
     }
 
     let totalAmount = 0;
-    const orderItems = cartItems.map(item => {
-      const itemTotal = item.product_id.price * item.quantity;
-      totalAmount += itemTotal;
-      return {
-        product_id: item.product_id._id,
-        product_name: item.product_id.name,
-        quantity: item.quantity,
-        price: item.product_id.price,
-        total_price: itemTotal
-      };
+    cartItems.forEach(item => {
+      totalAmount += item.product_id.price * item.quantity;
     });
 
-    // Initialize Razorpay instance
-    const razorpay = new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET,
-    });
-
-    // Create a payment order
+    // Create Razorpay payment order
     const paymentOptions = {
-      amount: totalAmount * 100, // Amount in paise
+      amount: totalAmount * 100,
       currency: 'INR',
       receipt: `RECEIPT-${Date.now()}`,
-      payment_capture: 1, // Auto capture
+      payment_capture: 1
     };
 
     const paymentOrder = await razorpay.orders.create(paymentOptions);
+
+    // Set expiry time for cleanup
+    setTimeout(async () => {
+      try {
+        await Order.deleteOne({
+          razorpay_order_id: paymentOrder.id,
+          payment_status: 'pending'
+        });
+      } catch (error) {
+        console.error('Error cleaning up specific pending order:', error);
+      }
+    }, 10 * 60 * 1000); // 10 minutes
 
     res.status(201).json({
       success: true,
@@ -60,87 +83,109 @@ const createOrderFromCart = async (req, res) => {
       currency: 'INR',
     });
   } catch (error) {
-    console.error('Error creating order from cart:', error);
-    res.status(500).json({ success: false, message: 'Error creating order', error: error.message });
+    console.error('Error creating Razorpay order:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creating Razorpay order', 
+      error: error.message 
+    });
   }
 };
 
 const verifyPayment = async (req, res) => {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
-  const user_id = req.user.id; // Assuming you have user authentication middleware
-
   try {
-    const razorpay = new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET,
-    });
-
-    const isValidSignature = razorpay.validateWebhookSignature(
-      JSON.stringify(req.body),
+    const {
+      razorpay_payment_id,
+      razorpay_order_id,
       razorpay_signature,
-      process.env.RAZORPAY_WEBHOOK_SECRET
-    );
+      user_id,
+      order_details
+    } = req.body;
 
-    if (!isValidSignature) {
-      return res.status(400).json({ success: false, message: 'Invalid payment signature' });
+    console.log('Received payment verification data:', req.body);
+
+    // Check if RAZORPAY_KEY_SECRET exists
+    if (!process.env.RAZORPAY_KEY_SECRET) {
+      console.error('RAZORPAY_KEY_SECRET is not defined in environment variables');
+      return res.status(500).json({
+        success: false,
+        message: 'Payment verification configuration error'
+      });
     }
 
-    // Fetch payment details from Razorpay
-    const payment = await razorpay.payments.fetch(razorpay_payment_id);
+    // Verify payment signature using RAZORPAY_KEY_SECRET
+    const sign = razorpay_order_id + '|' + razorpay_payment_id;
+    const expectedSign = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(sign)
+      .digest('hex');
 
-    if (payment.status !== 'captured') {
-      return res.status(400).json({ success: false, message: 'Payment not captured' });
+    if (razorpay_signature !== expectedSign) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid payment signature'
+      });
     }
 
-    // Create order
-    const cart = await Cart.findOne({ user_id });
-    const cartItems = await CartItem.find({ cart_id: cart._id }).populate('product_id');
-
-    const orderItems = cartItems.map(item => ({
-      product_id: item.product_id._id,
-      product_name: item.product_id.name,
-      quantity: item.quantity,
-      price: item.product_id.price,
-      total_price: item.product_id.price * item.quantity
+    // Process items with proper product_name
+    const processedItems = order_details.items.map(item => ({
+      product_id: item.product_id?._id || item.product_id,
+      product_name: item.name || item.product_name || 'Unknown Product',
+      variant_name: item.variant_name || '50ml',
+      quantity: Number(item.quantity),
+      price: Number(item.price),
+      total_price: Number(item.price * item.quantity)
     }));
 
-    const order = new Order({
-      user_id,
-      order_no: `ORD-${Date.now()}`,
-      order_status: 'Paid',
-      total_amount: payment.amount / 100, // Convert back from paise to rupees
-      items: orderItems
-    });
+    // Create order data with completed status
+    const orderData = {
+      order_no: 'ORD' + Date.now() + Math.random().toString(36).substring(7),
+      user_id: user_id,
+      items: processedItems,
+      total_amount: Number(order_details.total_amount),
+      shipping_address: order_details.shipping_address,
+      payment_status: 'completed', // Always set as completed for Razorpay
+      order_status: 'confirmed',
+      payment_method: 'razorpay',
+      payment_details: {
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature,
+        payment_date: new Date()
+      }
+    };
 
-    const savedOrder = await order.save();
+    // Create and save the order
+    const newOrder = new Order(orderData);
+    const savedOrder = await newOrder.save();
 
-    // Save payment details
-    const paymentRecord = new Payment({
-      user_id,
-      order_id: savedOrder._id,
-      razorpay_order_id,
-      razorpay_payment_id,
-      amount: payment.amount / 100,
-      currency: payment.currency,
-      payment_status: 'Successful',
-      payment_method: 'Razorpay',
-    });
+    // Clear the user's cart after successful order
+    if (user_id) {
+      try {
+        const cart = await Cart.findOne({ user_id });
+        if (cart) {
+          await CartItem.deleteMany({ cart_id: cart._id });
+          await Cart.findOneAndDelete({ user_id });
+        }
+      } catch (error) {
+        console.error('Error clearing cart:', error);
+        // Don't fail the order if cart clearing fails
+      }
+    }
 
-    await paymentRecord.save();
-
-    // Clear the cart
-    await CartItem.deleteMany({ cart_id: cart._id });
-    cart.items = [];
-    await cart.save();
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Payment verified and order created successfully',
-      order_id: savedOrder._id
+      order: savedOrder
     });
+
   } catch (error) {
     console.error('Error verifying payment:', error);
-    res.status(500).json({ success: false, message: 'Error verifying payment', error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: 'Error verifying payment',
+      error: error.message
+    });
   }
 };
 
@@ -159,17 +204,33 @@ const getOrderHistory = async (req, res) => {
         select: 'name image image_urls price'
       });
 
-    // Change this part to return an empty array instead of a 404 error
     if (!orders.length) {
-      return res.status(200).json({ success: true, orders: [] }); // Return success with empty orders
+      return res.status(200).json({ success: true, orders: [] });
     }
 
     const formattedOrders = orders.map(order => ({
       _id: order._id,
       order_no: order.order_no,
+      is_guest: order.is_guest,
+      guest_info: order.is_guest ? {
+        name: order.guest_info.name,
+        email: order.guest_info.email,
+        phone: order.guest_info.phone
+      } : null,
       order_status: order.order_status,
+      payment_status: order.payment_status,
+      payment_method: order.payment_method,
       total_amount: order.total_amount,
-      createdAt: order.createdAt,
+      shipping_address: {
+        street: order.shipping_address.street,
+        state: order.shipping_address.state,
+        house: order.shipping_address.house,
+        postcode: order.shipping_address.postcode,
+        location: order.shipping_address.location,
+        country: order.shipping_address.country,
+        phone_number: order.shipping_address.phone_number,
+        address_name: order.shipping_address.address_name
+      },
       items: order.items.map(item => ({
         _id: item._id,
         product: {
@@ -178,10 +239,23 @@ const getOrderHistory = async (req, res) => {
           image: item.product_id.image_urls ? item.product_id.image_urls[0] : item.product_id.image,
           price: item.product_id.price
         },
+        product_name: item.product_name,
         quantity: item.quantity,
         price: item.price,
-        total_price: item.total_price
-      }))
+        total_price: item.total_price,
+        variant_name: item.variant_name,
+        return_status: item.return_status || 'none',
+        return_details: item.return_details ? {
+          request_type: item.return_details.request_type,
+          reason: item.return_details.reason,
+          description: item.return_details.description,
+          request_date: item.return_details.request_date,
+          status_update_date: item.return_details.status_update_date
+        } : null
+      })),
+      tracking_number: order.tracking_number || null,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt
     }));
 
     res.status(200).json({
@@ -193,8 +267,6 @@ const getOrderHistory = async (req, res) => {
     res.status(500).json({ success: false, message: 'Error fetching order history', error: error.message });
   }
 };
-
-
 
 const getAllOrders = async (req, res) => {
   try {
@@ -315,10 +387,569 @@ const downloadInvoice = async (req, res) => {
   }
 };
 
+const createGuestOrder = async (req, res) => {
+  try {
+    const {
+      items,
+      total_amount
+    } = req.body;
+
+    if (!items || !total_amount) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields'
+      });
+    }
+
+    // For Razorpay, only create the payment order without storing in DB
+    const razorpayOrder = await razorpay.orders.create({
+      amount: Math.round(total_amount * 100), // Convert to paise
+      currency: 'INR',
+      receipt: `GUEST-${Date.now()}`,
+      payment_capture: 1
+    });
+
+    return res.status(200).json({
+      success: true,
+      razorpayOrder: {
+        id: razorpayOrder.id,
+        amount: razorpayOrder.amount,
+        currency: razorpayOrder.currency
+      }
+    });
+
+  } catch (error) {
+    console.error('Error creating Razorpay order:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error creating Razorpay order',
+      error: error.message
+    });
+  }
+};
+
+const verifyGuestPayment = async (req, res) => {
+  try {
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      items,
+      shipping_address,
+      guest_info,
+      total_amount
+    } = req.body;
+
+    // Verify Razorpay signature first
+    const sign = razorpay_order_id + '|' + razorpay_payment_id;
+    const expectedSign = crypto
+      .createHmac('sha256', process.env.RAZORPAY_SECRET)
+      .update(sign)
+      .digest('hex');
+
+    if (razorpay_signature !== expectedSign) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid payment signature'
+      });
+    }
+
+    // Only create order after payment verification is successful
+    const orderData = {
+      order_no: 'GO-' + Date.now() + '-' + Math.random().toString(36).substring(7),
+      is_guest: true,
+      guest_info,
+      items,
+      shipping_address,
+      total_amount,
+      payment_method: 'razorpay',
+      payment_status: 'completed', // Set as completed since payment is verified
+      order_status: 'confirmed',
+      payment_details: {
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature,
+        payment_date: new Date()
+      }
+    };
+
+    const order = new Order(orderData);
+    const savedOrder = await order.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payment verified and order created successfully',
+      order: savedOrder
+    });
+
+  } catch (error) {
+    console.error('Error verifying payment:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error verifying payment',
+      error: error.message
+    });
+  }
+};
+
+// Create return request
+const createReturnRequest = async (req, res) => {
+  try {
+    const { orderId, itemId, reason, description, returnType } = req.body;
+    
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const orderItem = order.items.id(itemId);
+    if (!orderItem) {
+      return res.status(404).json({ message: 'Order item not found' });
+    }
+
+    // Update the item's return status and details
+    orderItem.return_status = 'requested';
+    orderItem.return_details = {
+      request_type: returnType,
+      reason: reason,
+      description: description,
+      request_date: new Date(),
+      status_update_date: new Date()
+    };
+
+    await order.save();
+    res.status(200).json({ message: 'Return request created successfully', order });
+
+  } catch (error) {
+    console.error('Create return request error:', error);
+    res.status(500).json({ message: 'Error creating return request', error: error.message });
+  }
+};
+
+// Update return request status (for admin)
+const updateReturnRequestStatus = async (req, res) => {
+  try {
+    const { orderId, itemId, status } = req.body;
+    
+    if (!['approved', 'rejected', 'completed'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status' });
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const orderItem = order.items.id(itemId);
+    if (!orderItem) {
+      return res.status(404).json({ message: 'Order item not found' });
+    }
+
+    orderItem.return_status = status;
+    orderItem.return_details.status_update_date = new Date();
+
+    await order.save();
+    res.status(200).json({ message: 'Return request status updated successfully', order });
+
+  } catch (error) {
+    console.error('Update return request status error:', error);
+    res.status(500).json({ message: 'Error updating return request status', error: error.message });
+  }
+};
+
+// Get return requests (can be filtered by status)
+const getReturnRequests = async (req, res) => {
+  try {
+    const { status } = req.query;
+    
+    let query = {
+      'items.return_status': { $ne: 'none' }
+    };
+
+    if (status) {
+      query = {
+        'items.return_status': status
+      };
+    }
+
+    const orders = await Order.find(query)
+      .populate('user_id', 'name email')
+      .select('order_no items shipping_address createdAt');
+
+    res.status(200).json(orders);
+
+  } catch (error) {
+    console.error('Get return requests error:', error);
+    res.status(500).json({ message: 'Error fetching return requests', error: error.message });
+  }
+};
+
+const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'No user found with this email address'
+      });
+    }
+
+    // Generate reset token
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenExpiry = Date.now() + 3600000; // Token valid for 1 hour
+
+    // Save hashed token to user
+    user.resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+    user.resetPasswordExpire = resetTokenExpiry;
+    await user.save();
+
+    // Create reset URL
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+
+    // Send email
+    await nodemailer.sendMail({
+      from: 'your-email@example.com',
+      to: user.email,
+      subject: 'Password Reset Request',
+      text: `You requested a password reset. Please go to this link to reset your password: ${resetUrl}`
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Password reset link sent to email'
+    });
+
+  } catch (error) {
+    console.error('Forgot password error:', error);
+
+    // Clear reset token fields on error
+    if (user) {
+      user.resetPasswordToken = undefined;
+      user.resetPasswordExpire = undefined;
+      await user.save();
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Error sending reset email',
+      error: error.message
+    });
+  }
+};
+
+const resetPassword = async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    // Hash token to compare with stored hash
+    const resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(token)
+      .digest('hex');
+
+    // Find user with valid token
+    const user = await User.findOne({
+      resetPasswordToken,
+      resetPasswordExpire: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired reset token'
+      });
+    }
+
+    // Set new password
+    user.password = newPassword;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Password reset successful'
+    });
+
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error resetting password',
+      error: error.message
+    });
+  }
+};
+
+const createCodOrder = async (req, res) => {
+  try {
+    console.log('Received COD order request:', req.body);
+    
+    const { user_id, items, shipping_address, total_amount, guest_info } = req.body;
+
+    // Log the received data
+    console.log('Parsed request data:', {
+      user_id,
+      itemsLength: items?.length,
+      shipping_address,
+      total_amount,
+      guest_info
+    });
+
+    // Validate required fields
+    if (!items || !shipping_address || !total_amount) {
+      console.log('Missing required fields:', {
+        hasItems: !!items,
+        hasShippingAddress: !!shipping_address,
+        hasTotalAmount: !!total_amount
+      });
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields'
+      });
+    }
+
+    try {
+      // Process items with proper structure
+      const processedItems = items.map(item => {
+        console.log('Processing item:', item);
+        return {
+          product_id: item.product_id?._id || item.product_id,
+          product_name: item.product_name || item._display?.name || 'Unknown Product',
+          variant_name: item.variant_name || '50ml',
+          quantity: Number(item.quantity),
+          price: Number(item.price),
+          total_price: Number(item.price * item.quantity)
+        };
+      });
+
+      console.log('Processed items:', processedItems);
+
+      // Create order data
+      const orderData = {
+        order_no: 'COD-' + Date.now() + '-' + Math.random().toString(36).substring(7),
+        user_id: user_id || null,
+        is_guest: !user_id,
+        guest_info: !user_id ? guest_info : null,
+        items: processedItems,
+        shipping_address,
+        total_amount: Number(total_amount),
+        payment_method: 'cod',
+        payment_status: 'pending',
+        order_status: 'confirmed',
+        payment_details: {
+          payment_date: new Date()
+        }
+      };
+
+      console.log('Order data to be saved:', orderData);
+
+      // Create and save the order
+      const order = new Order(orderData);
+      const savedOrder = await order.save();
+
+      console.log('Order saved successfully:', savedOrder);
+
+      // If user is logged in, clear their cart
+      if (user_id) {
+        try {
+          console.log('Attempting to clear cart for user:', user_id);
+          const cart = await Cart.findOne({ user_id });
+          if (cart) {
+            await CartItem.deleteMany({ cart_id: cart._id });
+            await Cart.findOneAndDelete({ user_id });
+            console.log('Cart cleared successfully');
+          } else {
+            console.log('No cart found for user');
+          }
+        } catch (cartError) {
+          console.error('Error clearing cart:', cartError);
+          // Don't fail the order if cart clearing fails
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'COD order created successfully',
+        order: savedOrder
+      });
+
+    } catch (processingError) {
+      console.error('Error processing order data:', processingError);
+      throw processingError; // Re-throw to be caught by outer catch
+    }
+
+  } catch (error) {
+    console.error('Error creating COD order:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    return res.status(500).json({
+      success: false,
+      message: 'Error creating order',
+      error: error.message,
+      details: error.stack
+    });
+  }
+};
+
+const createCodOrderLoggedIn = async (req, res) => {
+  try {
+    const {
+      user_id,
+      items,
+      total_amount,
+      shipping_address,
+      payment_method,
+      payment_status,
+      order_status
+    } = req.body;
+
+    // Validate required fields
+    if (!user_id || !items || !total_amount || !shipping_address) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields'
+      });
+    }
+
+    // Generate a unique order number
+    const orderNo = `COD${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
+    // Process items with proper structure
+    const processedItems = items.map(item => ({
+      product_id: item.product_id?._id || item.product_id,
+      product_name: item.product_name || item._display?.name || 'Unknown Product',
+      variant_name: item.variant_name || '50ml',
+      quantity: Number(item.quantity),
+      price: Number(item.price),
+      total_price: Number(item.price * item.quantity)
+    }));
+
+    const newOrder = new Order({
+      order_no: orderNo,
+      user_id,
+      items: processedItems,
+      total_amount: Number(total_amount),
+      shipping_address,
+      payment_method: 'cod',
+      payment_status: 'pending',
+      order_status: 'confirmed',
+      razorpay_order_id: orderNo
+    });
+
+    const savedOrder = await newOrder.save();
+
+    // Clear user's cart after successful order creation
+    try {
+      const cart = await Cart.findOne({ user_id });
+      if (cart) {
+        await CartItem.deleteMany({ cart_id: cart._id });
+        await Cart.findOneAndDelete({ user_id });
+      }
+    } catch (error) {
+      console.error('Error clearing cart:', error);
+      // Don't fail the order if cart clearing fails
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'COD order created successfully',
+      order: savedOrder
+    });
+  } catch (error) {
+    console.error('Error creating COD order:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create COD order',
+      error: error.message
+    });
+  }
+};
+
+const createGuestCodOrder = async (req, res) => {
+  try {
+    const {
+      items,
+      guest_info,
+      total_amount,
+      shipping_address,
+      payment_method,
+      payment_status,
+      order_status
+    } = req.body;
+
+    // Validate required fields
+    if (!items || !guest_info || !total_amount || !shipping_address) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields'
+      });
+    }
+
+    // Generate a unique order number
+    const orderNo = `GUESTCOD${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
+    // Process items with proper structure
+    const processedItems = items.map(item => ({
+      product_id: item.product_id?._id || item.product_id,
+      product_name: item.product_name || item._display?.name || 'Unknown Product',
+      variant_name: item.variant_name || '50ml',
+      quantity: Number(item.quantity),
+      price: Number(item.price),
+      total_price: Number(item.price * item.quantity)
+    }));
+
+    const newOrder = new Order({
+      order_no: orderNo,
+      is_guest: true,
+      guest_info,
+      items: processedItems,
+      total_amount: Number(total_amount),
+      shipping_address,
+      payment_method: 'cod',
+      payment_status: 'pending',
+      order_status: 'confirmed',
+      razorpay_order_id: orderNo
+    });
+
+    const savedOrder = await newOrder.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Guest COD order created successfully',
+      order: savedOrder
+    });
+  } catch (error) {
+    console.error('Error creating guest COD order:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create guest COD order',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   createOrderFromCart,
   verifyPayment,
   getOrderHistory,
   getAllOrders,
-  downloadInvoice
+  downloadInvoice,
+  createGuestOrder,
+  createReturnRequest,
+  updateReturnRequestStatus,
+  getReturnRequests,
+  verifyGuestPayment,
+  forgotPassword,
+  resetPassword,
+  createCodOrder,
+  createCodOrderLoggedIn,
+  createGuestCodOrder
 };

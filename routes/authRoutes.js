@@ -10,7 +10,8 @@ const {
     resendOtp,
     validateToken,
     forgotPassword,
-    resetPassword
+    resetPassword 
+
 } = require('../controller/authController'); // Adjust the path as necessary
 const authenticate = require('../middleware/userAuth');
 
@@ -23,11 +24,10 @@ router.post('/verify-otp', verifyOtp);
 router.post('/resend-otp', resendOtp);
 router.post('/login', userLogin);
 router.post('/forgot-password',forgotPassword);
-router.post('/reset-password/:token',resetPassword);
+router.post('/reset-password/',resetPassword);
 router.post('/admin-login', adminLogin);
 router.post('/refresh-token', refreshToken);
 router.post('/logout', logout);
 router.post('/validate-token', authenticate,validateToken);
-
 
 module.exports = router;

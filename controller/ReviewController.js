@@ -30,7 +30,21 @@ exports.addReview = async (req, res) => {
     });
 
     await review.save();
-    res.status(201).json({ message: 'Review added successfully', review });
+
+    // Populate user details before sending response
+    const populatedReview = await Review.findById(review._id)
+      .populate('user_id', 'first_name last_name email username profile_picture')
+      .populate('product_id', 'name');
+
+    res.status(201).json({ 
+      message: 'Review added successfully', 
+      review: {
+        ...populatedReview.toObject(),
+        user_name: populatedReview.user_id.username || 
+          `${populatedReview.user_id.first_name} ${populatedReview.user_id.last_name}`.trim(),
+        profile_picture: populatedReview.user_id.profile_picture
+      }
+    });
   } catch (error) {
     console.error('Error adding review:', error);
     res.status(500).json({ message: 'Server error while adding review' });
@@ -53,17 +67,34 @@ exports.editReview = async (req, res) => {
       return res.status(403).json({ message: 'Not authorized to edit this review' });
     }
 
-    // Upload new photo to Cloudinary if provided
-    if (req.file) {
-      const result = await cloudinary.uploader.upload(req.file.path);
-      review.photo_url = result.secure_url;
+    if (req.files && req.files.length > 0) {
+      const newPhotoUrls = [];
+      for (const file of req.files) {
+        const result = await cloudinary.uploader.upload(file.path);
+        newPhotoUrls.push(result.secure_url);
+      }
+      review.photo_urls = newPhotoUrls;
     }
 
     review.comment = comment || review.comment;
     review.rating = rating || review.rating;
 
     await review.save();
-    res.json({ message: 'Review updated successfully', review });
+
+    // Populate user details before sending response
+    const updatedReview = await Review.findById(reviewId)
+      .populate('user_id', 'first_name last_name email username profile_picture')
+      .populate('product_id', 'name');
+
+    res.json({ 
+      message: 'Review updated successfully', 
+      review: {
+        ...updatedReview.toObject(),
+        user_name: updatedReview.user_id.username || 
+          `${updatedReview.user_id.first_name} ${updatedReview.user_id.last_name}`.trim(),
+        profile_picture: updatedReview.user_id.profile_picture
+      }
+    });
   } catch (error) {
     console.error('Error editing review:', error);
     res.status(500).json({ message: 'Server error while editing review' });
@@ -105,19 +136,28 @@ exports.getProductReviews = async (req, res) => {
       page: parseInt(page, 10),
       limit: parseInt(limit, 10),
       sort: { createdAt: -1 },
-      populate: { 
-        path: 'user_id', 
-        select: 'name'
-      },
+      populate: [
+        { 
+          path: 'user_id',
+          select: 'first_name last_name email username profile_picture'
+        },
+        {
+          path: 'product_id',
+          select: 'name'
+        }
+      ],
     };
 
     const reviews = await Review.paginate({ product_id: productId, is_active: true }, options);
 
-    const reviewsWithUserNames = reviews.docs.map(review => ({
+    const reviewsWithUserDetails = reviews.docs.map(review => ({
       _id: review._id,
       user_id: review.user_id._id,
-      user_name: review.user_id.name,
-      product_id: review.product_id,
+      user_name: review.user_id.username || `${review.user_id.first_name} ${review.user_id.last_name}`.trim(),
+      user_email: review.user_id.email,
+      profile_picture: review.user_id.profile_picture,
+      product_id: review.product_id._id,
+      product_name: review.product_id.name,
       photo_urls: review.photo_urls,
       comment: review.comment,
       rating: review.rating,
@@ -127,7 +167,7 @@ exports.getProductReviews = async (req, res) => {
     }));
 
     res.json({
-      reviews: reviewsWithUserNames,
+      reviews: reviewsWithUserDetails,
       totalPages: reviews.totalPages,
       currentPage: reviews.page,
       totalReviews: reviews.totalDocs,

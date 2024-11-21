@@ -164,7 +164,7 @@ exports.getCart = async (req, res) => {
     const cartItems = await CartItem.find({ cart_id: cart._id })
       .populate({
         path: 'product_id',
-        select: 'name image_urls variants' // Select the fields you need
+        select: 'name image_urls variants description' // Include description in the selected fields
       });
 
     // Calculate cart totals

@@ -10,4 +10,5 @@ router.delete('/delete/:offerId', offerController.deleteOffer);
 router.get('/', offerController.getAllOffers);
 router.get('/active-offers', offerController.getActiveOffers);
 router.post('/apply-offer', offerController.applyOffer);
+router.post('/remove', offerController.removeOffer);
 module.exports = router;

@@ -19,7 +19,8 @@ const userRoutes = require('./routes/userRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const Razorpay = require('razorpay');
 const cookieParser = require('cookie-parser');
-
+const newsletterRoutes = require('./routes/newsletterRoute');
+const careerRoutes = require('./routes/careerRoutes');
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
@@ -30,11 +31,15 @@ const razorpay = new Razorpay({
 
 // Middleware
 app.use(cors({
-  origin: 'http://localhost:3000', // or your frontend URL
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
+
+
+
+
 app.use(bodyParser.json());
 
 // Connect to MongoDB
@@ -56,6 +61,9 @@ app.use('/api/offers', offerRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/newsletter', newsletterRoutes);
+app.use('/api/careers', careerRoutes);
+
 
 app.get('/', (req, res) => {
   res.send('Server Running');
