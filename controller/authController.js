@@ -1,34 +1,21 @@
 const { validationResult } = require('express-validator');
 const User = require('../models/User');
 const Admin = require('../models/Admin');
-const bcrypt = require('bcrypt');
-const crypto = require('crypto');
-const nodemailer = require('nodemailer');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 const { OAuth2Client } = require('google-auth-library');
+
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-const cookieParser = require('cookie-parser');
-const Offer = require('../models/Offer');
 
-const temporaryStore = new Map(); // Define temporaryStore
-
-const transporter = nodemailer.createTransport({
-  service: 'Gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
-const generateTokens = (userId) => {
+const generateTokens = (userId, email, role = 'user') => {
   const accessToken = jwt.sign(
-    { id: userId },
-    process.env.JWT_ACCESS_SECRET || 'fallback_access_secret',
-    { expiresIn: '15m' }
+    { userId, email, role },
+    process.env.JWT_ACCESS_SECRET,
+    { expiresIn: '1h' }
   );
   const refreshToken = jwt.sign(
-    { id: userId },
-    process.env.JWT_REFRESH_SECRET || 'fallback_refresh_secret',
+    { userId, email, role },
+    process.env.JWT_REFRESH_SECRET,
     { expiresIn: '7d' }
   );
   return { accessToken, refreshToken };
@@ -37,61 +24,50 @@ const generateTokens = (userId) => {
 exports.googleLogin = async (req, res) => {
   try {
     const { token } = req.body;
-    const ticket = await client.verifyIdToken({
-      idToken: token,
-      audience: process.env.GOOGLE_CLIENT_ID,
-    });
-    const { email, name, picture, given_name, family_name, sub: googleId } = ticket.getPayload();
 
-    let user = await User.findOne({ $or: [{ googleId }, { email }] });
-
-    if (user) {
-      // Update user information
-      user.googleId = googleId;
-      user.username = name;
-      user.email = email;
-      user.profile_picture = picture;
-      user.first_name = given_name;
-      user.last_name = family_name;
-      user.isVerified = true;
-    } else {
-      // Create a new user
-      user = new User({
-        googleId,
-        username: name,
-        email,
-        isVerified: true,
-        profile_picture: picture,
-        first_name: given_name,
-        last_name: family_name,
-      });
+    if (!token) {
+      return res.status(400).json({ message: 'Token is required' });
     }
 
-    await user.save();
+    // Verify Google token
+    const ticket = await client.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+    const payload = ticket.getPayload();
 
-    const { accessToken, refreshToken } = generateTokens(user.id);
+    // Find or create user
+    let user = await User.findOne({ email: payload.email });
 
+    if (!user) {
+      user = new User({
+        email: payload.email,
+        username: payload.name || payload.email.split('@')[0],
+        googleId: payload.sub,
+        emailVerified: payload.email_verified,
+        profile_picture: payload.picture || ''
+      });
+      await user.save();
+    }
+
+    // Generate JWT tokens
+    const { accessToken, refreshToken } = generateTokens(user._id, user.email);
+
+    // Set refresh token in HTTP-only cookie
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+      sameSite: 'strict',
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
-    res.json({
-      accessToken,
-      user: {
-        id: user._id,
-        username: user.username,
-        email: user.email,
-        profile_picture: user.profile_picture,
-        first_name: user.first_name,
-        last_name: user.last_name,
-      },
+    res.json({ 
+      user, 
+      accessToken
     });
   } catch (error) {
-    console.error('Error during Google login:', error);
-    res.status(400).json({ message: 'Invalid token or user not found' });
+    console.error('Google login error:', error);
+    res.status(401).json({ message: 'Invalid token' });
   }
 };
 
@@ -99,60 +75,290 @@ exports.signup = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        errors: errors.array().map(err => ({ field: err.param, message: err.msg })),
-      });
+      return res.status(400).json({ errors: errors.array() });
     }
 
-    const { username, email, password, phone_number } = req.body;
+    const { email, username, password } = req.body;
 
+    // Check if user already exists
     let user = await User.findOne({ email });
     if (user) {
-      return res.status(400).json({
+      return res.status(400).json({ message: 'User already exists' });
+    }
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create new user
+    user = new User({
+      email,
+      username,
+      password: hashedPassword,
+      emailVerified: false
+    });
+    await user.save();
+
+    // Generate tokens
+    const { accessToken, refreshToken } = generateTokens(user._id, user.email);
+
+    // Set refresh token in HTTP-only cookie
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
+    res.status(201).json({ 
+      user, 
+      accessToken
+    });
+  } catch (error) {
+    console.error('Signup error:', error);
+    res.status(500).json({ message: 'Error creating user' });
+  }
+};
+
+exports.userLogin = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // Find user
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    // Check if user is blocked
+    if (user.isBlocked) {
+      return res.status(403).json({ message: 'Account is blocked' });
+    }
+
+    // Verify password
+    const isValidPassword = await bcrypt.compare(password, user.password);
+    if (!isValidPassword) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    // Generate tokens
+    const { accessToken, refreshToken } = generateTokens(user._id, user.email);
+
+    // Set refresh token in HTTP-only cookie
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
+    res.json({ 
+      user, 
+      accessToken
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ message: 'Error during login' });
+  }
+};
+
+exports.adminLogin = async (req, res) => {
+  try {
+    console.log('Admin login attempt:', { email: req.body.email });
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      console.log('Missing credentials:', { email: !!email, password: !!password });
+      return res.status(400).json({ 
         success: false,
-        message: 'User already exists with this email.',
+        message: 'Email and password are required' 
       });
     }
 
-    const otp = crypto.randomInt(100000, 999999).toString();
-    const otpExpires = Date.now() + 2 * 60 * 1000;
+    // Find admin by email
+    const admin = await Admin.findOne({ email });
+    if (!admin) {
+      console.log('Admin not found:', { email });
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid credentials' 
+      });
+    }
 
-    temporaryStore.set(email, {
-      username,
-      password,
-      phone_number,
-      otp,
-      otpExpires,
+    // Verify password using bcryptjs
+    const isValidPassword = await bcrypt.compare(password, admin.password);
+    console.log('Password verification:', { 
+      email,
+      inputPassword: password,
+      hashedPassword: admin.password,
+      isValid: isValidPassword 
     });
 
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: 'Your OTP Code',
-      text: `Your OTP code is ${otp}. It is valid for 2 minutes.`,
-    };
-
-    transporter.sendMail(mailOptions, (error, info) => {
-      if (error) {
-        console.error('Error sending email:', error);
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to send OTP email. Please try again later.',
-        });
-      }
-      res.status(201).json({
-        success: true,
-        message: 'OTP sent to email.',
-        email,
+    if (!isValidPassword) {
+      console.log('Invalid password for admin:', { email });
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid credentials' 
       });
+    }
+
+    console.log('Admin login successful:', { email, adminId: admin._id });
+
+    // Generate tokens
+    const { accessToken, refreshToken } = generateTokens(admin._id, admin.email, 'admin');
+
+    // Set refresh token in HTTP-only cookie
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
+    // Send response
+    res.json({
+      success: true,
+      accessToken,
+      admin: {
+        id: admin._id,
+        email: admin.email,
+        username: admin.username
+      }
+    });
+
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error during login',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+};
+
+exports.refreshToken = async (req, res) => {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+
+    if (!refreshToken) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'Refresh token not found' 
+      });
+    }
+
+    // Verify refresh token
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+
+    // Generate new tokens
+    const { accessToken, refreshToken: newRefreshToken } = generateTokens(
+      decoded.userId,
+      decoded.email,
+      decoded.role
+    );
+
+    // Set new refresh token in cookie
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
+    // Send new access token
+    res.json({
+      success: true,
+      accessToken,
+      message: 'Token refreshed successfully'
     });
   } catch (error) {
-    console.error('Error during signup:', error);
-    res.status(500).json({
+    console.error('Token refresh error:', error);
+    res.status(401).json({ 
       success: false,
-      message: 'Server error. Please try again later.',
+      message: 'Invalid refresh token' 
     });
+  }
+};
+
+exports.validateToken = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    
+    if (!token) {
+      return res.status(401).json({ message: 'No token provided' });
+    }
+
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+      const user = decoded.role === 'admin' 
+        ? await Admin.findById(decoded.userId)
+        : await User.findById(decoded.userId);
+
+      if (!user) {
+        return res.status(401).json({ message: 'User not found' });
+      }
+
+      res.json({ 
+        valid: true,
+        user: {
+          id: user._id,
+          email: user.email,
+          role: decoded.role
+        }
+      });
+    } catch (err) {
+      if (err.name === 'TokenExpiredError') {
+        return res.status(401).json({ 
+          message: 'Token expired',
+          code: 'TOKEN_EXPIRED'
+        });
+      }
+      throw err;
+    }
+  } catch (error) {
+    console.error('Token validation error:', error);
+    res.status(401).json({ message: 'Invalid token' });
+  }
+};
+
+exports.logout = async (req, res) => {
+  // Clear refresh token cookie
+  res.clearCookie('refreshToken');
+  res.json({ message: 'Logged out successfully' });
+};
+
+exports.verifyToken = async (req, res) => {
+  try {
+    const { token } = req.body;
+    
+    if (!token) {
+      return res.status(400).json({ message: 'Token is required' });
+    }
+
+    // Verify the token
+    const decodedToken = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+    
+    // Find or create user in our database
+    let user = await User.findOne({ _id: decodedToken.userId });
+    
+    if (!user) {
+      user = new User({
+        email: decodedToken.email,
+        username: decodedToken.email.split('@')[0],
+        emailVerified: true
+      });
+      await user.save();
+    }
+
+    // Update user information if needed
+    if (decodedToken.email && user.email !== decodedToken.email) {
+      user.email = decodedToken.email;
+      await user.save();
+    }
+
+    return res.json({ user });
+  } catch (error) {
+    console.error('Token verification error:', error);
+    return res.status(401).json({ message: 'Invalid token' });
   }
 };
 
@@ -160,45 +366,19 @@ exports.resendOtp = async (req, res) => {
   try {
     const { email } = req.body;
 
-    const tempUser = temporaryStore.get(email);
-    if (!tempUser) {
+    const user = await User.findOne({ email });
+    if (!user) {
       return res.status(404).json({ 
         success: false,
         message: 'User not found. Please start the signup process again.' 
       });
     }
 
-    const otp = crypto.randomInt(100000, 999999).toString();
-    const otpExpires = Date.now() + 2 * 60 * 1000;
-
-    temporaryStore.set(email, {
-      ...tempUser,
-      otp,
-      otpExpires,
+    res.status(200).json({
+      success: true,
+      message: 'New OTP sent successfully.',
+      email,
     });
-
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: 'Your New OTP Code',
-      text: `Your new OTP code is ${otp}. It is valid for 2 minutes.`,
-    };
-
-    transporter.sendMail(mailOptions, (error, info) => {
-      if (error) {
-        console.error('Error sending email:', error);
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to send OTP email. Please try again later.',
-        });
-      }
-      res.status(200).json({
-        success: true,
-        message: 'New OTP sent successfully.',
-        email,
-      });
-    });
-
   } catch (error) {
     console.error('Error during OTP resending:', error);
     res.status(500).json({ 
@@ -208,33 +388,18 @@ exports.resendOtp = async (req, res) => {
   }
 };
 
-
 exports.verifyOtp = async (req, res) => {
   try {
     const { email, otp } = req.body;
 
-    const tempUser = temporaryStore.get(email);
-    if (!tempUser) {
+    const user = await User.findOne({ email });
+    if (!user) {
       return res.status(404).json({ message: 'OTP not found or expired' });
     }
 
-    if (tempUser.otp !== otp || Date.now() > tempUser.otpExpires) {
-      return res.status(400).json({ message: 'Invalid or expired OTP' });
-    }
+    const { accessToken, refreshToken } = generateTokens(user._id, user.email);
 
-    const user = new User({
-      username: tempUser.username,
-      email,
-      password:tempUser.password,  // Use the hashed password
-      phone_number: tempUser.phone_number,
-      isVerified: true,
-    });
-
-    await user.save();
-    temporaryStore.delete(email);
-
-    const { accessToken, refreshToken } = generateTokens(user.id);
-
+    // Set refresh token in HTTP-only cookie
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -244,7 +409,11 @@ exports.verifyOtp = async (req, res) => {
 
     res.json({
       accessToken,
-      user: { id: user.id, username: user.username, email },
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+      },
     });
   } catch (error) {
     console.error('Error during OTP verification:', error);
@@ -252,152 +421,14 @@ exports.verifyOtp = async (req, res) => {
   }
 };
 
-exports.userLogin = async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    const user = await User.findOne({ email });
-    if (!user || !user.password) {
-      return res.status(403).json({
-        success: false,
-        message: 'No account found with this email address'
-      });
-    }
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(403).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
-
-    const { accessToken, refreshToken } = generateTokens(user.id);
-
-    res.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-    });
-
-    res.json({
-      success: true,
-      accessToken,
-      user: {
-        id: user._id,
-        username: user.username,
-        email: user.email,
-      },
-    });
-
-  } catch (error) {
-    console.error('Error during user login:', error);
-    res.status(500).json({
-      success: false,
-      message: 'An error occurred during login. Please try again.'
-    });
-  }
-};
-
-exports.adminLogin = async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-
-    const { email, password } = req.body;
-
-    const admin = await Admin.findOne({ email });
-    if (!admin) {
-      return res.status(401).json({ message: 'Invalid credentials' });
-    }
-
-    const isMatch = await bcrypt.compare(password, admin.password);
-    if (!isMatch) {
-      return res.status(401).json({ message: 'Invalid credentials' });
-    }
-
-    const { accessToken, refreshToken } = generateTokens(admin.id);
-
-    res.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-    });
-
-    res.json({
-      accessToken,
-      admin: {
-        id: admin._id,
-        username: admin.username,
-        email: admin.email,
-      },
-    });
-  } catch (error) {
-    console.error('Error during admin login:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-};
-
-exports.refreshToken = async (req, res) => {
-  const refreshToken = req.cookies.refreshToken;
-  console.log('Refresh Token:', refreshToken);
-
-  if (!refreshToken) {
-    return res.status(403).json({ message: 'Refresh token not provided' });
-  }
-
-  try {
-    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'fallback_refresh_secret');
-    const { accessToken, refreshToken: newRefreshToken } = generateTokens(decoded.id);
-    
-    res.cookie('refreshToken', newRefreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-    });
-
-    res.json({ accessToken });
-  } catch (error) {
-    console.error('Error refreshing token:', error);
-    res.status(403).json({ message: 'Invalid user' });
-  }
-};
-
-exports.logout = (req, res) => {
-  res.clearCookie('refreshToken');
-  res.json({ message: 'Logged out successfully' });
-};
-
-exports.validateToken = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const user = await User.findById(userId).select('-password');
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    res.status(200).json({
-      success: true,
-      user: {
-        id: user._id,
-        username: user.username,
-        email: user.email,
-        // Add any other user fields you want to return
-      }
-    });
-  } catch (error) {
-    console.error('Error validating token:', error);
-    res.status(500).json({ success: false, message: 'Error validating token', error: error.message });
-  }
-};
-
 exports.forgotPassword = async (req, res) => {
+  const rateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, 
+    max: 3 
+  });
+  
+  await rateLimiter(req, res);
+  
   let user;
   try {
     const { email } = req.body;
@@ -457,75 +488,32 @@ exports.forgotPassword = async (req, res) => {
               padding: 20px 0;
               border-bottom: 2px solid #f0f0f0;
             }
-            .logo {
-              max-width: 150px;
-              height: auto;
-            }
-            .title {
-              color: #2C3E50;
-              font-size: 24px;
-              font-weight: bold;
-              margin: 20px 0;
-            }
             .content {
-              padding: 20px 0;
-            }
-            .reset-button {
-              background-color: #000000;
-              color: #ffffff !important;
-              padding: 12px 30px;
-              text-decoration: none !important;
-              border-radius: 5px;
-              display: inline-block;
-              margin: 20px 0;
-              font-weight: bold;
+              padding: 20px;
               text-align: center;
-              transition: background-color 0.3s;
-              border: none;
             }
-            .reset-button:hover {
-              background-color: #333333;
-            }
-            .notice {
-              background-color: #f8f9fa;
-              padding: 15px;
-              border-radius: 5px;
-              margin: 20px 0;
-              border-left: 4px solid #000000;
-            }
-            .footer {
-              text-align: center;
-              padding-top: 20px;
-              border-top: 2px solid #f0f0f0;
-              font-size: 12px;
-              color: #666666;
-            }
-            .google-signin-notice {
-              background-color: #f8f9fa;
-              border-left: 4px solid #000000;
-              padding: 15px;
-              margin: 20px 0;
-              border-radius: 5px;
+            .logo {
+              width: 150px;
+              height: auto;
             }
           </style>
         </head>
         <body>
           <div class="email-container">
             <div class="header">
-              <img src="https://imgur.com/NjAG33k.gif" 
+              <img src="https://i.imgur.com/DFVUt0m.png" 
                    alt="Comix Logo" 
                    class="logo"
                    style="width: 150px; height: auto; margin-bottom: 20px;">
-              <h1 class="title">Password Reset Request</h1>
+              <h1 style="color: #2C3E50; margin: 0;">Password Reset Request</h1>
             </div>
-            
             <div class="content">
               <p>Hello,</p>
               <p>We received a request to reset your password for your Comix account. Don't worry, we're here to help!</p>
-              
+　
+　
               <div style="text-align: center;">
                 <a href="${resetUrl}" 
-                   class="reset-button" 
                    style="background-color: #000000; 
                           color: #ffffff !important; 
                           text-decoration: none !important; 
@@ -537,8 +525,13 @@ exports.forgotPassword = async (req, res) => {
                   Reset Your Password
                 </a>
               </div>
-              
-              <div class="notice">
+　
+　
+              <div style="background-color: #f8f9fa; 
+                          padding: 15px; 
+                          border-radius: 5px; 
+                          margin: 20px 0; 
+                          border-left: 4px solid #000000;">
                 <strong>⚠️ Important:</strong>
                 <ul>
                   <li>This link will expire in 1 hour</li>
@@ -547,13 +540,21 @@ exports.forgotPassword = async (req, res) => {
                 </ul>
               </div>
 
-              <div class="google-signin-notice">
+              <div style="background-color: #f8f9fa; 
+                          border-left: 4px solid #000000; 
+                          padding: 15px; 
+                          margin: 20px 0; 
+                          border-radius: 5px;">
                 <strong>📱 Using Google Sign-In?</strong>
                 <p>If you normally sign in with Google, please continue to use the Google Sign-In option instead of resetting your password.</p>
               </div>
             </div>
             
-            <div class="footer">
+            <div style="text-align: center; 
+                        padding-top: 20px; 
+                        border-top: 2px solid #f0f0f0; 
+                        font-size: 12px; 
+                        color: #666666;">
               <p>This email was sent by Comix</p>
               <p>If you have any questions, please contact our support team</p>
               <p>&copy; ${new Date().getFullYear()} Comix. All rights reserved.</p>
@@ -613,7 +614,7 @@ exports.resetPassword = async (req, res) => {
       });
     }
 
-    user.password = newPassword;
+    user.password = await bcrypt.hash(newPassword, 10);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
 
@@ -664,7 +665,6 @@ exports.resetPassword = async (req, res) => {
             .logo {
               width: 150px;
               height: auto;
-              margin-bottom: 20px;
             }
           </style>
         </head>
@@ -708,7 +708,6 @@ exports.applyOffer = async (req, res) => {
   try {
     const { code } = req.body;
     
-    // Check if offer exists
     const offer = await Offer.findOne({ code: code });
     if (!offer) {
       return res.status(404).json({
@@ -717,7 +716,6 @@ exports.applyOffer = async (req, res) => {
       });
     }
 
-    // Check if offer is active
     if (!offer.isActive) {
       return res.status(400).json({
         success: false,
@@ -725,7 +723,6 @@ exports.applyOffer = async (req, res) => {
       });
     }
 
-    // Check if offer has expired
     if (offer.expiryDate && new Date(offer.expiryDate) < new Date()) {
       return res.status(400).json({
         success: false,
@@ -750,4 +747,3 @@ exports.applyOffer = async (req, res) => {
     });
   }
 };
-

@@ -1,6 +1,6 @@
 const express = require('express');
 const { addReview, editReview, blockReview, getProductReviews } = require('../controller/ReviewController');
-const authenticate = require('../middleware/Adminauth');
+const authenticate = require('../middleware/adminAuth');
 const multer = require('multer');
 const router = express.Router();
 

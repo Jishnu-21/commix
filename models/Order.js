@@ -51,15 +51,15 @@ const orderItemSchema = new mongoose.Schema({
 });
 
 const orderSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
   order_no: {
     type: String,
     required: true,
     unique: true
-  },
-  user_id: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: function() { return !this.is_guest; } // Only required for non-guest orders
   },
   is_guest: {
     type: Boolean,
@@ -70,33 +70,7 @@ const orderSchema = new mongoose.Schema({
     email: String,
     phone: String
   },
-  items: [{
-    product_id: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Product',
-      required: true
-    },
-    product_name: {
-      type: String,
-      required: true
-    },
-    variant_name: {
-      type: String,
-      default: '50ml'
-    },
-    quantity: {
-      type: Number,
-      required: true
-    },
-    price: {
-      type: Number,
-      required: true
-    },
-    total_price: {
-      type: Number,
-      required: true
-    }
-  }],
+  items: [orderItemSchema],
   total_amount: {
     type: Number,
     required: true,
@@ -142,9 +116,26 @@ const orderSchema = new mongoose.Schema({
       return this.payment_method === 'razorpay'; // Only required for Razorpay payments
     }
   }
-}, { timestamps: true });
+}, { 
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
 
-// Add an index on payment_status and createdAt for efficient cleanup
+// Virtual populate for user details
+orderSchema.virtual('user', {
+  ref: 'User',
+  localField: 'userId',
+  foreignField: '_id',
+  justOne: true
+});
+
+// Index for efficient queries
+orderSchema.index({ userId: 1, createdAt: -1 });
 orderSchema.index({ payment_status: 1, createdAt: 1 });
+orderSchema.index({ order_status: 1 });
+orderSchema.index({ paymentStatus: 1 });
 
-module.exports = mongoose.model('Order', orderSchema);
+const Order = mongoose.model('Order', orderSchema);
+
+module.exports = Order;

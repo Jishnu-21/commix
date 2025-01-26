@@ -12,7 +12,9 @@ const productSchema = new mongoose.Schema({
   functions: { type: String },
   ingredients: { type: String },
   hero_ingredients: { type: String },
-  taglines: { type: String }, 
+  taglines: { type: String },   
+  FAQs: [{ type: String }],
+  additional_info: { type: String },
   variants: [{
     name: { 
       type: String, 

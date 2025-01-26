@@ -60,9 +60,6 @@ const userSchema = new mongoose.Schema({
     trim: true,
     lowercase: true
   },
-  password: {
-    type: String
-  },
   googleId: {
     type: String,
     default: undefined
@@ -71,14 +68,18 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  password: {
+    type: String,
+    required: function() {
+      return !this.googleId; // Password is required only for local auth
+    }
+  },
   resetPasswordToken: String,
   resetPasswordExpire: Date,
   profile_picture: String,
   first_name: String,
   last_name: String,
   address: [addressSchema], // Add the address array to the user schema
-  resetPasswordToken: String,
-  resetPasswordExpires: Date,
   isBlocked: {
     type: Boolean,
     default: false
@@ -87,8 +88,11 @@ const userSchema = new mongoose.Schema({
   referral_balance: {
     type: Number,
     default: 0
+  },
+  emailVerified: {
+    type: Boolean,
+    default: false
   }
-  
 }, 
 {
   timestamps: true

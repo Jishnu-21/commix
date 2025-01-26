@@ -204,7 +204,6 @@ const updateAddress = async (req, res) => {
   }
 };
 
-
 const addAddress = async (req, res) => {
   try {
     const userId = req.user.id;
@@ -331,15 +330,14 @@ const deleteAddress = async (req, res) => {
 const getAddresses = async (req, res) => {
   try {
     const userId = req.user.id;
+    const cacheKey = `user_addresses_${userId}`;
     
     // Try to get from cache first
-    const cacheKey = `user_addresses_${userId}`;
     const cachedAddresses = cache.get(cacheKey);
-    
     if (cachedAddresses) {
-      return res.status(200).json({
-        success: true,
-        addresses: cachedAddresses
+      return res.status(200).json({ 
+        success: true, 
+        addresses: cachedAddresses 
       });
     }
 
@@ -347,26 +345,25 @@ const getAddresses = async (req, res) => {
     const user = await User.findById(userId).select('address');
     
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
       });
     }
 
-    // Store in cache for future requests
+    // Cache the addresses for 5 minutes
     cache.set(cacheKey, user.address);
 
-    res.status(200).json({
-      success: true,
-      addresses: user.address
+    res.status(200).json({ 
+      success: true, 
+      addresses: user.address 
     });
-
   } catch (error) {
     console.error('Error fetching addresses:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching addresses',
-      error: error.message
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error fetching addresses', 
+      error: error.message 
     });
   }
 };

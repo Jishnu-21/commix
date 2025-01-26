@@ -5,7 +5,7 @@ const ProductVisit = require('../models/ProductVisit');
 const mongoose = require('mongoose');
 const Category = require('../models/Category');
 
-const VARIANT_SIZES = ['50ml', '150ml', '250ml'];
+const VARIANT_SIZES = ['50ml', '150ml', '250ml']
 
 const addProduct = async (req, res) => {
   try {
@@ -129,6 +129,7 @@ const addProduct = async (req, res) => {
 
 const blockProduct = async (req, res) => {
   const { id } = req.params;
+  let { isBlocked } = req.body;
 
   try {
     const product = await Product.findById(id);
@@ -137,10 +138,20 @@ const blockProduct = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
-    product.isBlocked = true;
+    // If isBlocked is not provided, toggle the current status
+    if (typeof isBlocked !== 'boolean') {
+      isBlocked = !product.isBlocked;
+    }
+
+    product.isBlocked = isBlocked;
     await product.save();
 
-    return res.status(200).json({ success: true, message: 'Product blocked successfully', product });
+    const action = isBlocked ? 'blocked' : 'unblocked';
+    return res.status(200).json({ 
+      success: true, 
+      message: `Product successfully ${action}`, 
+      product 
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -267,7 +278,7 @@ const getProductDetails = async (req, res) => {
 
 const getAllProducts = async (req, res) => {
   try {
-    const products = await Product.find()
+    const products = await Product.find({ isBlocked: false })  // Only get unblocked products
       .populate('category_id')
       .lean();  // Convert to plain JavaScript objects
 
@@ -322,7 +333,7 @@ const getProductDetailsBySlug = async (req, res) => {
 const trackProductVisit = async (req, res) => {
   const { productId, productName, userId } = req.body;
   const userIp = req.ip;
-  const userAgent = req.headers['user-agent'];
+  const userAgent = req.headers['user-agent']
 
   try {
     const visit = {
@@ -357,8 +368,17 @@ const getRecentlyVisitedProducts = async (req, res) => {
   const { userId } = req.params;
 
   try {
-    const productVisits = await ProductVisit.find({ userId }).populate('productId');
-    res.status(200).json({ message: 'Recently visited products retrieved successfully', productVisits });
+    const productVisits = await ProductVisit.find({ userId })
+      .populate('productId')
+      .lean();  // Convert to plain JavaScript objects
+
+    // Filter out visits where productId is null (deleted products)
+    const validProductVisits = productVisits.filter(visit => visit.productId != null);
+
+    res.status(200).json({ 
+      message: 'Recently visited products retrieved successfully', 
+      productVisits: validProductVisits 
+    });
   } catch (error) {
     console.error('Error retrieving recently visited products:', error);
     res.status(500).json({ message: 'Error retrieving recently visited products', error: error.message });

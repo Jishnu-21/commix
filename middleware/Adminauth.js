@@ -1,30 +1,60 @@
-const Admin = require('../models/Admin'); // Ensure this is correct
-const jwt = require('jsonwebtoken'); // Ensure this is imported
+const Admin = require('../models/Admin'); 
+const jwt = require('jsonwebtoken'); 
 
 const adminAuthenticate = async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-
-  if (!token) {
-    console.log('No token provided');
-    return res.status(401).json({ message: 'No token provided' });
-  }
-
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log('Decoded token:', decoded);
-
-    const admin = await Admin.findById(decoded.id); // Use Admin here instead of User
-    
-    if (!admin) {
-      console.log('Admin not found');
-      return res.status(401).json({ message: 'Admin not found' });
+    // Get token from Authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ 
+        success: false,
+        message: 'No token provided' 
+      });
     }
 
-    req.user = admin; 
-    next();
+    const token = authHeader.split(' ')[1];
+
+    try {
+      // Verify token
+      const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+
+      // Check if token is for admin role
+      if (!decoded.role || decoded.role !== 'admin') {
+        return res.status(403).json({ 
+          success: false,
+          message: 'Access denied: Admin privileges required' 
+        });
+      }
+
+      // Find admin by ID
+      const admin = await Admin.findById(decoded.userId);
+      if (!admin) {
+        return res.status(401).json({ 
+          success: false,
+          message: 'Admin not found' 
+        });
+      }
+
+      // Attach admin info to request
+      req.admin = admin;
+      req.user = { id: admin._id, email: admin.email, role: 'admin' };
+      next();
+    } catch (error) {
+      if (error.name === 'TokenExpiredError') {
+        return res.status(401).json({
+          success: false,
+          message: 'Token expired',
+          expired: true
+        });
+      }
+      throw error;
+    }
   } catch (error) {
-    console.error('Authentication error:', error.message);
-    return res.status(401).json({ message: 'Invalid token' });
+    console.error('Admin authentication error:', error);
+    res.status(401).json({ 
+      success: false,
+      message: 'Authentication failed' 
+    });
   }
 };
 

@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const cartController = require('../controller/CartController');
 
+// Get user's cart
+router.get('/:userId', cartController.getCart);
+
 // Add product to cart
 router.post('/add', cartController.addToCart);
 
@@ -9,9 +12,9 @@ router.post('/add', cartController.addToCart);
 router.post('/remove', cartController.removeFromCart);
 
 // Delete entire cart
-router.post('/delete-cart', cartController.deleteCart);
-router.get('/:user_id', cartController.getCart);
+router.delete('/:userId', cartController.deleteCart);
 
+// Update cart item quantity
 router.put('/update-quantity', cartController.updateCartItemQuantity);
 
 module.exports = router;
