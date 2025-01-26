@@ -11,11 +11,11 @@ const {
     downloadOrderInvoice,
     getSalesData 
 } = require('../controller/adminController');
-const authenticate = require('../middleware/adminAuth'); 
+const authenticate = require('../middleware/Adminauth'); 
 const { adminLogin, refreshToken } = require('../controller/authController');
 const router = express.Router();
 const { body } = require('express-validator');
-const productController = require('../controller/productController');
+const productController = require('../controller/ProductController');
 
 // Admin login route (unprotected)
 router.post('/login', [
