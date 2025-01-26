@@ -11,7 +11,7 @@ const path = require('path');
 
 // Route imports
 const authRoutes = require('./routes/authRoutes');  
-const prodRoutes = require('./routes/ProdRoutes');
+const prodRoutes = require('./routes/prodRoutes');
 const catRoutes = require('./routes/categoryRoutes');
 const cartRoutes = require('./routes/cartRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
