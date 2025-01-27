@@ -219,7 +219,7 @@ const verifyPayment = async (req, res) => {
           </div>
 
           <div style="margin-top: 30px; text-align: center; padding: 20px; background-color: #f8f9fa; border-radius: 5px;">
-            <p style="margin: 0; color: #666;">© ${new Date().getFullYear()} Comix. All rights reserved.</p>
+            <p style="margin: 0; color: #666;">&copy; ${new Date().getFullYear()} Comix. All rights reserved.</p>
           </div>
         </div>
       `;
@@ -262,40 +262,37 @@ const createGuestOrder = async (req, res) => {
     const { items, guest_info, shipping_address, total_amount } = req.body;
     console.log('Received guest order data:', req.body);
 
-    // Create Razorpay order first
+    // Create Razorpay order
     const paymentOrder = await razorpay.orders.create({
-      amount: total_amount * 100,
+      amount: Math.round(parseFloat(total_amount) * 100),
       currency: 'INR',
       receipt: `GUEST-${Date.now()}`
     });
 
-    // Format order items
-    const orderItems = items.map(item => ({
-      product_id: item.product_id,
-      product_name: item.product_name,
-      variant_name: '50ml',
-      quantity: Number(item.quantity),
-      price: Number(item.price),
-      total_price: Number(item.total_price)
-    }));
-
-    // Create order in database
+    // Prepare order data
     const orderData = {
-      order_no: paymentOrder.receipt,
+      order_no: `GUEST-${Date.now()}`,
       is_guest: true,
       guest_info: {
         firstName: guest_info.firstName,
         lastName: guest_info.lastName,
         email: guest_info.email,
-        phone: shipping_address.phone_number
+        phone: guest_info.phone
       },
-      items: orderItems,
-      shipping_address: shipping_address,
-      total_amount: total_amount,
+      items: items.map(item => ({
+        product_id: item.product_id,
+        product_name: item.product_name,
+        variant_name: item.variant_name || '50ml', // Default to 50ml if not specified
+        quantity: item.quantity,
+        price: item.price,
+        total_price: item.total_price
+      })),
+      shipping_address,
+      total_amount,
       payment_method: 'razorpay',
       payment_status: 'pending',
       order_status: 'pending',
-      razorpay_order_id: paymentOrder.id // Make sure this field exists in your Order schema
+      razorpay_order_id: paymentOrder.id
     };
 
     console.log('Creating order with data:', orderData);
@@ -454,7 +451,7 @@ const verifyGuestPayment = async (req, res) => {
           </div>
 
           <div style="margin-top: 30px; text-align: center; padding: 20px; background-color: #f8f9fa; border-radius: 5px;">
-            <p style="margin: 0; color: #666;">© ${new Date().getFullYear()} Comix. All rights reserved.</p>
+            <p style="margin: 0; color: #666;">&copy; ${new Date().getFullYear()} Comix. All rights reserved.</p>
           </div>
         </div>
       `;

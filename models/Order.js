@@ -51,15 +51,17 @@ const orderItemSchema = new mongoose.Schema({
 });
 
 const orderSchema = new mongoose.Schema({
-  userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  },
   order_no: {
     type: String,
     required: true,
     unique: true
+  },
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: function() {
+      return !this.is_guest; // userId is only required if it's not a guest order
+    }
   },
   is_guest: {
     type: Boolean,

@@ -11,7 +11,10 @@ const productSchema = new mongoose.Schema({
   subcategory_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Category.subcategories', index: true },
   functions: { type: String },
   ingredients: { type: String },
-  hero_ingredients: { type: String },
+  hero_ingredients: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'HeroIngredient'
+  }],
   taglines: { type: String },   
   FAQs: [{ type: String }],
   additional_info: { type: String },
@@ -46,5 +49,10 @@ productSchema.pre('save', function(next) {
   }
   next();
 });
+
+// Add a method to populate hero ingredients
+productSchema.methods.populateHeroIngredients = function() {
+  return this.populate('hero_ingredients');
+};
 
 module.exports = mongoose.model('Product', productSchema);
