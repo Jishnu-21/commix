@@ -25,7 +25,11 @@ exports.getCart = async (req, res) => {
     const cartItems = await CartItem.find({ cart_id: cart._id })
       .populate({
         path: 'product_id',
-        select: 'name image_urls variants description'
+        select: 'name image_urls variants description category_id',
+        populate: {
+          path: 'category_id',
+          select: 'name'
+        }
       });
 
     // Calculate total price
@@ -37,7 +41,13 @@ exports.getCart = async (req, res) => {
       variant_name: item.variant_name,
       quantity: item.quantity,
       price: item.price,
-      total_price: item.price * item.quantity
+      total_price: item.price * item.quantity,
+      _display: {
+        name: item.product_id.name,
+        image_urls: item.product_id.image_urls,
+        description: item.product_id.description,
+        category: item.product_id.category_id ? item.product_id.category_id.name : 'Uncategorized'
+      }
     }));
 
     res.status(200).json({

@@ -25,6 +25,8 @@ const userRoutes = require('./routes/userRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const newsletterRoutes = require('./routes/newsletterRoute');
 const careerRoutes = require('./routes/careerRoutes');
+const heroIngredientRoutes = require('./routes/heroIngredientRoutes');
+
 const Razorpay = require('razorpay');
 
 const app = express();
@@ -125,6 +127,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/newsletter', newsletterRoutes);
 app.use('/api/careers', careerRoutes);
+app.use('/api/hero-ingredients', heroIngredientRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

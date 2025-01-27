@@ -12,13 +12,15 @@ const upload = multer({
 const router = express.Router();
 
 // Routes
-router.post('/add', upload.array('files', 7), productController.addProduct); // Use 'files' to match the keyrouter.patch('/block/:id', authenticate, productController.blockProduct);
+router.post('/add', upload.array('files', 7), productController.addProduct); // Use 'files' to match the key
 router.put('/edit/:id', upload.array('images', 10), productController.editProduct); // Also support multiple images for edit
+router.get('/subcategory/:subcategoryId', productController.getProductsBySubcategory); // Add this new route
 router.get('/:id', productController.getProductDetails); // Fetch product details by ID
 router.get('/details/:slug', productController.getProductDetailsBySlug);
 router.get('/', productController.getAllProducts); // Fetch all products
 router.post('/trackProduct', productController.trackProductVisit);
-router.patch('/block/:id',productController.blockProduct)
+router.patch('/block/:id',productController.blockProduct);
 router.get('/recentlyVisited/:userId', productController.getRecentlyVisitedProducts);
+router.get('/subcategory/:subcategoryId', productController.getProductsBySubcategory); // Add this new route
 
 module.exports = router;

@@ -2,6 +2,7 @@ const User = require('../models/User');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const puppeteer = require('puppeteer');
+const Category = require('../models/Category');
 
 // Get all users for admin
 const getAllUsersForAdmin = async (req, res) => {
@@ -288,7 +289,25 @@ const getSalesData = async (req, res) => {
 // Get all products for admin
 const getAllProductsForAdmin = async (req, res) => {
     try {
-        const products = await Product.find();
+        const products = await Product.find()
+            .populate('category_id')
+            .populate({
+                path: 'hero_ingredients.ingredient',
+                model: 'HeroIngredient',
+                select: 'name image_url descriptions'
+            })
+            .lean();  // Convert to plain JavaScript objects
+
+        // Manually populate subcategory information
+        for (let product of products) {
+            if (product.subcategory_id && product.category_id) {
+                const category = await Category.findById(product.category_id);
+                if (category) {
+                    product.subcategory = category.subcategories.id(product.subcategory_id);
+                }
+            }
+        }
+
         res.json({
             success: true,
             products

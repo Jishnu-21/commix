@@ -4,126 +4,201 @@ const Product = require('../models/Product');
 const ProductVisit = require('../models/ProductVisit');
 const mongoose = require('mongoose');
 const Category = require('../models/Category');
+const HeroIngredient = require('../models/HeroIngredient');
 
-const VARIANT_SIZES = ['50ml', '150ml', '250ml']
 
 const addProduct = async (req, res) => {
   try {
     const { 
       name, description, category_id, subcategory_id, 
-      ingredients, hero_ingredients, functions, taglines
+      ingredients, hero_ingredients, how_to_use,
+      functions, taglines, faqs, additional_info
     } = req.body;
 
+    // Parse JSON strings if they are strings
+    let parsedHeroIngredients;
+    let parsedFaqs;
     let variants;
-    try {
-      variants = JSON.parse(req.body.variants);
-    } catch (error) {
-      return res.status(400).json({ message: 'Invalid variants data' });
-    }
 
-    console.log('Request body:', req.body);
-    console.log('Files:', req.files);
-    console.log('Parsed variants:', variants);
+    try {
+      parsedHeroIngredients = typeof hero_ingredients === 'string' ? 
+        JSON.parse(hero_ingredients) : hero_ingredients;
+      
+      parsedFaqs = typeof faqs === 'string' ? 
+        JSON.parse(faqs) : faqs;
+      
+      variants = typeof req.body.variants === 'string' ? 
+        JSON.parse(req.body.variants) : req.body.variants;
+    } catch (error) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid JSON data in request' 
+      });
+    }
 
     // Validate variants
     if (!Array.isArray(variants) || variants.length === 0) {
-      return res.status(400).json({ message: 'At least one variant is required' });
-    }
-
-    for (const variant of variants) {
-      if (!VARIANT_SIZES.includes(variant.name)) {
-        return res.status(400).json({ message: `Invalid variant size: ${variant.name}` });
-      }
-      if (typeof variant.price !== 'number' || variant.price < 0) {
-        return res.status(400).json({ message: 'Invalid variant price' });
-      }
-      if (typeof variant.stock_quantity !== 'number' || variant.stock_quantity < 0) {
-        return res.status(400).json({ message: 'Invalid variant stock quantity' });
-      }
+      return res.status(400).json({ 
+        success: false, 
+        message: 'At least one variant is required' 
+      });
     }
 
     // Validate hero ingredients
-    if (hero_ingredients && Array.isArray(hero_ingredients)) {
-      const invalidHeroIngredients = hero_ingredients.filter(
-        hero => !ingredients.includes(hero)
-      );
-      
-      if (invalidHeroIngredients.length > 0) {
-        return res.status(400).json({ 
-          message: `Hero ingredients must be part of the main ingredients list. Invalid ingredients: ${invalidHeroIngredients.join(', ')}`
-        });
-      }
+    if (!Array.isArray(parsedHeroIngredients) || parsedHeroIngredients.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'At least one hero ingredient is required' 
+      });
     }
 
-    const imageUrls = [];
+    // Upload images to Cloudinary
+    const uploadPromises = req.files.map(file => {
+      return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: "products" },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result.secure_url);
+          }
+        );
+        stream.end(file.buffer);
+      });
+    });
 
-    // Image upload logic
-    if (req.files && req.files.length > 0) {
-      for (const file of req.files) {
-        try {
-          const result = await new Promise((resolve, reject) => {
-            const uploadStream = cloudinary.uploader.upload_stream(
-              { resource_type: 'auto', folder: 'products' },
-              (error, result) => {
-                if (error) {
-                  console.error('Cloudinary upload error:', error);
-                  reject(error);
-                } else {
-                  console.log('Cloudinary upload result:', result);
-                  resolve(result);
-                }
-              }
-            );
-            uploadStream.end(file.buffer);
-          });
-          imageUrls.push(result.secure_url);
-        } catch (uploadError) {
-          console.error('Error uploading file to Cloudinary:', uploadError);
-        }
-      }
-      console.log('Uploaded image URLs:', imageUrls);
-    } else {
-      console.log('No files were uploaded');
-      return res.status(400).json({ message: 'No images uploaded' });
-    }
+    const image_urls = await Promise.all(uploadPromises);
 
-    if (imageUrls.length === 0) {
-      return res.status(500).json({ message: 'Failed to upload images' });
-    }
-
-    // Validate category and subcategory
-    const category = await Category.findById(category_id);
-    if (!category) {
-      return res.status(400).json({ message: 'Invalid category' });
-    }
-
-    if (subcategory_id) {
-      const subcategory = category.subcategories.id(subcategory_id);
-      if (!subcategory) {
-        return res.status(400).json({ message: 'Invalid subcategory for the given category' });
-      }
-    }
-
-    // Create new product with all fields
+    // Create new product
     const product = new Product({
       name,
       description,
       category_id,
       subcategory_id,
-      image_urls: imageUrls,
       ingredients,
-      taglines,
-      hero_ingredients,
+      hero_ingredients: parsedHeroIngredients,
+      how_to_use,
       functions,
-      variants
+      taglines,
+      faqs: parsedFaqs || [],
+      additional_info,
+      variants,
+      image_urls
     });
 
-    const savedProduct = await product.save();
+    await product.save();
 
-    res.status(201).json({ message: 'Product added successfully', product: savedProduct });
+    res.status(201).json({
+      success: true,
+      message: 'Product added successfully',
+      product
+    });
   } catch (error) {
     console.error('Error adding product:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({
+      success: false,
+      message: 'Error adding product',
+      error: error.message
+    });
+  }
+};
+
+const editProduct = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      name, description, category_id, subcategory_id, 
+      ingredients, hero_ingredients, how_to_use,
+      functions, taglines, faqs, additional_info,
+      variants: rawVariants,
+      existing_images
+    } = req.body;
+
+    // Parse JSON strings if they are strings
+    let parsedHeroIngredients;
+    let parsedFaqs;
+    let variants;
+    let existingImages;
+
+    try {
+      parsedHeroIngredients = typeof hero_ingredients === 'string' ? 
+        JSON.parse(hero_ingredients) : hero_ingredients;
+      
+      parsedFaqs = typeof faqs === 'string' ? 
+        JSON.parse(faqs) : faqs;
+      
+      variants = typeof rawVariants === 'string' ? 
+        JSON.parse(rawVariants) : rawVariants;
+
+      existingImages = typeof existing_images === 'string' ? 
+        JSON.parse(existing_images) : existing_images;
+    } catch (error) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid JSON data in request' 
+      });
+    }
+
+    // Handle new image uploads
+    let newImageUrls = [];
+    if (req.files && req.files.length > 0) {
+      const uploadPromises = req.files.map(file => {
+        return new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            { folder: "products" },
+            (error, result) => {
+              if (error) reject(error);
+              else resolve(result.secure_url);
+            }
+          );
+          stream.end(file.buffer);
+        });
+      });
+      newImageUrls = await Promise.all(uploadPromises);
+    }
+
+    // Combine existing and new images
+    const image_urls = [...(existingImages || []), ...newImageUrls];
+
+    // Update product
+    const updatedProduct = await Product.findByIdAndUpdate(
+      id,
+      {
+        name,
+        description,
+        category_id,
+        subcategory_id,
+        ingredients,
+        hero_ingredients: parsedHeroIngredients,
+        how_to_use,
+        functions,
+        taglines,
+        faqs: parsedFaqs || [],
+        additional_info,
+        variants,
+        image_urls
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedProduct) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Product updated successfully',
+      product: updatedProduct
+    });
+  } catch (error) {
+    console.error('Error updating product:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error updating product',
+      error: error.message
+    });
   }
 };
 
@@ -153,98 +228,6 @@ const blockProduct = async (req, res) => {
       product 
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-const editProduct = async (req, res) => {
-  const { id } = req.params;
-  const { 
-    name, description, category_id, subcategory_id, 
-    ingredients, hero_ingredients, functions, variants,taglines 
-  } = req.body;
-
-  try {
-    // Validate variants
-    if (variants) {
-      if (!Array.isArray(variants) || variants.length === 0) {
-        return res.status(400).json({ message: 'At least one variant is required' });
-      }
-
-      for (const variant of variants) {
-        if (!VARIANT_SIZES.includes(variant.name)) {
-          return res.status(400).json({ message: `Invalid variant size: ${variant.name}` });
-        }
-      }
-    }
-
-    // Validate category and subcategory
-    if (category_id) {
-      const category = await Category.findById(category_id);
-      if (!category) {
-        return res.status(400).json({ message: 'Invalid category' });
-      }
-
-      if (subcategory_id) {
-        const subcategory = category.subcategories.id(subcategory_id);
-        if (!subcategory) {
-          return res.status(400).json({ message: 'Invalid subcategory for the given category' });
-        }
-      }
-    }
-
-    // Validate hero ingredients if they're being updated
-    if (hero_ingredients && Array.isArray(hero_ingredients)) {
-      const invalidHeroIngredients = hero_ingredients.filter(
-        hero => !ingredients.includes(hero)
-      );
-      
-      if (invalidHeroIngredients.length > 0) {
-        return res.status(400).json({ 
-          message: `Hero ingredients must be part of the main ingredients list. Invalid ingredients: ${invalidHeroIngredients.join(', ')}`
-        });
-      }
-    }
-
-    const updateData = {
-      name,
-      description,
-      category_id,
-      subcategory_id,
-      ingredients,
-      taglines,
-      hero_ingredients,
-      functions,
-      variants
-    };
-
-    // Image upload logic (if new images are provided)
-    if (req.files && req.files.length > 0) {
-      const imageUrls = [];
-      for (const file of req.files) {
-        const result = await cloudinary.uploader.upload_stream(
-          { resource_type: 'auto', folder: 'products' },
-          (error, result) => {
-            if (error) {
-              console.error('Cloudinary upload error:', error);
-              throw error;
-            }
-            imageUrls.push(result.secure_url);
-          }
-        ).end(file.buffer);
-      }
-      updateData.image_urls = imageUrls;
-    }
-
-    const updatedProduct = await Product.findByIdAndUpdate(id, updateData, { new: true, runValidators: true });
-
-    if (!updatedProduct) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
-    }
-
-    return res.status(200).json({ success: true, product: updatedProduct });
-  } catch (error) {
-    console.error('Error updating product:', error);
     return res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -309,10 +292,24 @@ const getProductDetailsBySlug = async (req, res) => {
   try {
     const product = await Product.findOne({ slug })
       .populate('category_id')
+      .populate({
+        path: 'hero_ingredients.ingredient',
+        model: 'HeroIngredient',
+        select: 'name image_url description'
+      })
       .lean();  // Convert to plain JavaScript object
 
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    // Transform hero ingredients to match the admin view format
+    if (product.hero_ingredients) {
+      product.hero_ingredients = product.hero_ingredients.map(hi => ({
+        name: hi.ingredient.name,
+        image_url: hi.ingredient.image_url,
+        description: hi.description || hi.ingredient.description
+      }));
     }
 
     // Manually populate subcategory information
@@ -385,6 +382,29 @@ const getRecentlyVisitedProducts = async (req, res) => {
   }
 };
 
+const getProductsBySubcategory = async (req, res) => {
+  try {
+    const { subcategoryId } = req.params;
+    
+    const products = await Product.find({
+      subcategory_id: subcategoryId,
+      isBlocked: false
+    }).select('name slug price image_urls');
+
+    res.status(200).json({
+      success: true,
+      products
+    });
+  } catch (error) {
+    console.error('Error fetching products by subcategory:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching products',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   addProduct,
   blockProduct,
@@ -393,5 +413,6 @@ module.exports = {
   getAllProducts,
   getProductDetailsBySlug,
   trackProductVisit,
-  getRecentlyVisitedProducts
+  getRecentlyVisitedProducts,
+  getProductsBySubcategory
 };
